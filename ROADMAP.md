@@ -29,6 +29,7 @@ running Ollama service and a downloaded tool-capable model.
 
 - interactive CLI chat with streamed output;
 - Ink terminal UI with composer, conversation, modes, palettes, and inline approvals;
+- Markdown, code, syntax-color, and diff rendering for assistant output;
 - repository file listing, bounded reading, and ripgrep search;
 - one fully supported local model adapter;
 - local model discovery, interactive selection, and downloads with progress;

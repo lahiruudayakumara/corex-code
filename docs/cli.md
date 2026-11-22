@@ -22,10 +22,10 @@ one view.
  Ready                    shift+tab mode  ctrl+p commands  ctrl+o models
 ```
 
-After the first message, the banner gives way to the recent conversation. Long
-sessions retain the newest visible messages so the composer and status remain on
-screen. Narrow terminals use a compact banner and omit the repository path from
-the header.
+The interface uses the terminal's alternate screen. The ASCII banner and header
+stay pinned at the top, while the composer, status, and shortcuts stay pinned at
+the bottom. Only the middle conversation viewport scrolls. Narrow terminals use
+a compact banner and omit the repository path from the header.
 
 ## Composer
 
@@ -41,6 +41,24 @@ the header.
 Model output streams into the conversation. The activity line reports tool
 execution, approval requests, applied files, cancellation, and errors. Token
 usage appears in the composer status when the provider reports it.
+
+## Response rendering
+
+Assistant responses support terminal-friendly Markdown:
+
+- headings use bold accent colors;
+- bullet lists use visible markers;
+- inline code uses a distinct code color;
+- fenced code blocks receive a bordered panel and language label;
+- common language and SQL keywords, strings, numbers, and comments receive
+  syntax colors; and
+- diff additions and removals render in green and red.
+
+Some smaller local models emit a tool request as JSON text instead of using
+Ollama's structured tool-call field. Corex recognizes only declared tool names,
+validates their arguments through the normal safety layer, suppresses the raw
+JSON, and sends the tool result back to the model. Ordinary JSON answers and
+unknown tool names remain normal visible text and are never executed.
 
 ## Modes
 
@@ -67,6 +85,8 @@ read-only restriction.
 | `Ctrl+L` | Clear the visible conversation |
 | `Ctrl+C` | Cancel the active turn, or exit when idle |
 | `Up` / `Down` | Navigate a palette or prompt history |
+| `Page Up` / `Page Down` | Scroll older or newer chat messages |
+| `Ctrl+Up` / `Ctrl+Down` | Alternative chat scrolling shortcuts |
 | `Escape` | Close a palette or clear the draft |
 | `Y` / `N` | Apply or reject a displayed patch approval |
 

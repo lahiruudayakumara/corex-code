@@ -58,3 +58,5 @@ export type ApprovalRequest = {
 };
 
 export type ApprovalHandler = (request: ApprovalRequest) => Promise<boolean>;
+
+export type AgentMode = "build" | "plan" | "ask";

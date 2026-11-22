@@ -6,6 +6,7 @@ import { RepositoryTools } from "../repository/tools";
 import type {
   AgentEvent,
   ApprovalHandler,
+  AgentMode,
   ChatMessage,
   ModelAdapter,
   ModelUsage,
@@ -44,8 +45,14 @@ export class AgentSession {
 
   constructor(private readonly options: SessionOptions) {}
 
-  async run(prompt: string, signal: AbortSignal, onToken: (token: string) => void): Promise<TurnResult> {
+  async run(
+    prompt: string,
+    signal: AbortSignal,
+    onToken: (token: string) => void,
+    mode: AgentMode = "build",
+  ): Promise<TurnResult> {
     if (!prompt.trim()) throw new CorexError("Prompt cannot be empty");
+    this.messages.push({ role: "system", content: modeInstruction(mode) });
     this.messages.push({ role: "user", content: prompt.trim() });
     const changedFiles = new Set<string>();
     const readFiles = new Set<string>();
@@ -71,7 +78,7 @@ export class AgentSession {
       if (!calls.length) return { response: finalResponse, changedFiles: [...changedFiles], usage };
 
       for (const call of calls) {
-        const result = await this.executeTool(call, signal, changedFiles, readFiles);
+        const result = await this.executeTool(call, signal, changedFiles, readFiles, mode);
         this.messages.push({
           role: "tool",
           toolName: call.function.name,
@@ -89,6 +96,7 @@ export class AgentSession {
     signal: AbortSignal,
     changedFiles: Set<string>,
     readFiles: Set<string>,
+    mode: AgentMode,
   ): Promise<string> {
     const summary = summarizeCall(call);
     this.options.onEvent?.({ type: "tool_start", tool: call.function.name, summary });
@@ -119,6 +127,9 @@ export class AgentSession {
           break;
         }
         case "propose_patch": {
+          if (mode !== "build") {
+            throw new CorexError(`${modeName(mode)} mode is read-only; switch to Build mode to propose edits`);
+          }
           const args = parsed.args as { path: string; oldText: string; newText: string; explanation: string };
           const proposal = await createPatchProposal(this.options.repository.root, args);
           if (!readFiles.has(proposal.path)) {
@@ -153,6 +164,21 @@ export class AgentSession {
       return content;
     }
   }
+}
+
+function modeInstruction(mode: AgentMode): string {
+  switch (mode) {
+    case "build":
+      return "Current mode: Build. You may inspect files and propose focused edits for user approval.";
+    case "plan":
+      return "Current mode: Plan. Inspect the repository and produce an implementation plan. Do not propose edits.";
+    case "ask":
+      return "Current mode: Ask. Inspect evidence and answer the question. Do not propose edits.";
+  }
+}
+
+function modeName(mode: AgentMode): string {
+  return mode[0]!.toUpperCase() + mode.slice(1);
 }
 
 function serializeToolResult(value: unknown): string {

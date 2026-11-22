@@ -47,13 +47,19 @@ ollama serve
 bun run dev
 ```
 
-In another terminal, ensure the configured model is available with
-`ollama pull qwen2.5-coder:7b`. Run `bun run build && bun link` if you want to
-invoke the compiled CLI as `corex`.
+Corex opens the terminal UI immediately. Type `/model` to select an installed
+model, download the configured model, or enter another model name. Run
+`bun run build && bun link` if you want to invoke the compiled CLI as `corex`.
+
+```bash
+corex models list
+corex models pull qwen2.5-coder:7b
+```
 
 ## Documentation
 
 - [v0.1 product specification](docs/v0.1-spec.md)
+- [Terminal interface and shortcuts](docs/cli.md)
 - [Complete feature catalog](docs/features.md)
 - [Architecture](docs/architecture.md)
 - [Performance and local models](docs/performance.md)

@@ -30,11 +30,10 @@ lockfiles for this project.
 
 ## Configure Ollama
 
-Start Ollama and download the default model:
+Start Ollama:
 
 ```bash
 ollama serve
-ollama pull qwen2.5-coder:7b
 ```
 
 Copy the example configuration:
@@ -106,20 +105,63 @@ corex -C /path/to/project "Find where users are validated"
 
 `--model` and `--host` override configuration for one invocation.
 
-## Interactive commands
+## Select and download models
 
-| Command | Behavior |
+Corex opens the terminal UI without blocking on model setup. Type `/model` to
+open an inline modal like this:
+
+```text
+Select or download model
+› qwen2.5-coder:3b 3.1B Q4_K_M
+  Download configured: qwen2.5-coder:7b
+  Download another model…
+```
+
+Use the arrow keys and `Enter` to choose an installed model, download the
+configured model, or enter another Ollama model name. Download progress remains
+inside the modal and `Ctrl+C` cancels it.
+
+The same operations are available as explicit commands:
+
+```bash
+corex models list
+corex models pull qwen2.5-coder:7b
+```
+
+Use `--host` with either command when Ollama is not listening at
+`http://127.0.0.1:11434`:
+
+```bash
+corex models list --host http://192.168.1.10:11434
+```
+
+For a non-interactive Corex invocation, install the configured model first or
+pass the name of an installed model with `--model`.
+
+## Interactive terminal UI
+
+The full interface guide is in [cli.md](cli.md).
+
+| Input | Behavior |
 | --- | --- |
+| `Enter` | Submit the composer |
+| `Shift+Enter` | Insert a newline when supported by the terminal |
+| `Shift+Tab` | Cycle Build, Plan, and Ask modes |
+| `Ctrl+P` | Open the command palette |
+| `Ctrl+O` | Open the `/model` modal |
 | `/help` | Show session help |
 | `/status` | Show short Git status |
 | `/diff` | Show the safe unstaged Git diff |
+| `/model` | Select or download an Ollama model |
+| `/clear` | Clear the visible conversation |
+| `/new` | Start a new agent session |
 | `/exit` | Close the session |
-| `Ctrl+C` | Cancel the active model turn |
+| `Ctrl+C` | Cancel the active turn, or exit while idle |
 
-When Corex proposes a change, it displays the explanation and exact diff. Enter
-`y` or `yes` to apply that patch. Any other response rejects it without changing
-the file. Corex verifies that the source file has not changed since proposal
-creation and uses an atomic replacement.
+When Corex proposes a change, the composer becomes an approval panel containing
+the explanation and exact diff. Press `Y` to apply or `N`/`Escape` to reject.
+Corex verifies that the source file has not changed since proposal creation and
+uses an atomic replacement.
 
 ## Available model tools
 
@@ -148,6 +190,11 @@ Run the CLI inside a working tree or pass its path with `corex -C`. Verify that
 
 Confirm `ollama serve` is running, the configured base URL is reachable, and the
 selected model appears in `ollama list`.
+
+### The configured model is not installed
+
+Type `/model` in the terminal UI, run `corex models pull <name>`, or select an
+installed model for one invocation with `corex --model <name>`.
 
 ### The model does not call tools
 

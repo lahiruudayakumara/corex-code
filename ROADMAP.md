@@ -28,8 +28,10 @@ running Ollama service and a downloaded tool-capable model.
 ### Features
 
 - interactive CLI chat with streamed output;
+- Ink terminal UI with composer, conversation, modes, palettes, and inline approvals;
 - repository file listing, bounded reading, and ripgrep search;
 - one fully supported local model adapter;
+- local model discovery, interactive selection, and downloads with progress;
 - provider-neutral model and structured tool contracts;
 - strict tool-call schema validation;
 - repository-root, symlink, ignore, and secret-file protection;

@@ -84,7 +84,7 @@ them through tests and benchmarks.
 | --- | --- | --- |
 | Language | TypeScript | Strict shared contracts across clients, runtime, tools, and providers |
 | Runtime and package manager | Bun | Cross-platform CLI, scripts, bundling, packages, and tests |
-| CLI | Commander and readline | Commands, interactive prompts, streaming, and approvals |
+| CLI | Commander, Ink, and React | Commands, interactive terminal UI, streaming, palettes, and approvals |
 | Model integration | Provider-neutral Corex contract | Streaming, typed tools, and replaceable adapters |
 | Local inference | Official Ollama JavaScript client | Local generation, tool calls, cancellation, and streaming |
 | Local data | SQLite | Transactional memory, checkpoints, indexes, and traces |
@@ -181,7 +181,8 @@ an inferred command.
 
 Local models are a first-class execution mode, not a fallback. The fast path:
 
-1. discovers available models once and caches capability metadata;
+1. checks the local catalog in the terminal UI and exposes selection and
+   downloads through the `/model` modal;
 2. keeps the selected model warm when the runtime permits it;
 3. reuses stable prompt prefixes and repository summaries;
 4. streams output immediately;

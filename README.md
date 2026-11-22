@@ -14,9 +14,9 @@ safe autonomous execution, agent debugging, multi-agent coordination, and
 optional team collaboration.
 
 > [!IMPORTANT]
-> Corex Code is in its initial design and implementation phase. The `v0.1`
-> branch defines the first working release; commands shown in the documentation
-> are the target interface until the implementation lands.
+> The `v0.1` branch contains the first runnable release. It supports Ollama,
+> repository inspection, approved exact-text patches, and Git diff display.
+> Later roadmap capabilities remain planned.
 
 ## v0.1 scope
 
@@ -31,24 +31,25 @@ The first release focuses on a small, trustworthy coding loop:
 Persistent memory, automated verification, checkpoints, and multi-model routing
 are planned for later releases. See the [roadmap](ROADMAP.md).
 
-## Planned quick start
+## Quick start
 
 Prerequisites:
 
-- Node.js 20 or newer;
-- npm 10 or newer;
+- Bun 1.3 or newer;
 - Git; and
-- either Ollama or credentials for a supported cloud model.
+- ripgrep;
+- Ollama with a tool-capable coding model.
 
 ```bash
-npm install
-npm run build
-npm link
-corex
+bun install
+cp corex.config.example.json corex.config.json
+ollama serve
+bun run dev
 ```
 
-Corex will open the current Git repository and start an interactive session.
-The exact installation flow will be verified and updated as the CLI is built.
+In another terminal, ensure the configured model is available with
+`ollama pull qwen2.5-coder:7b`. Run `bun run build && bun link` if you want to
+invoke the compiled CLI as `corex`.
 
 ## Documentation
 

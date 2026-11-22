@@ -22,6 +22,9 @@ The [feature catalog](docs/features.md) defines product behavior, the
 
 Goal: establish a useful terminal agent with controlled repository access.
 
+Status: implemented on the `v0.1` branch. A live inference smoke test requires a
+running Ollama service and a downloaded tool-capable model.
+
 ### Features
 
 - interactive CLI chat with streamed output;

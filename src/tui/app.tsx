@@ -8,7 +8,8 @@ import { gitDiff, gitStatus } from "../repository/git";
 import type { RepositoryTools } from "../repository/tools";
 import type { AgentEvent, AgentMode, ApprovalRequest, ModelUsage } from "../types";
 import { renderBanner } from "../ui/banner";
-import { cycleMode, modeLabel, moveSelection, UI_COMMANDS, visibleTail } from "./state";
+import { cycleMode, modeLabel, moveSelection, UI_COMMANDS } from "./state";
+import { parseMarkdownBlocks, tokenizeCodeLine, type CodeToken } from "./markdown";
 import { TextArea } from "./text-area";
 
 type CorexTuiProps = {
@@ -64,6 +65,7 @@ export function CorexTui({
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(0);
   const [usage, setUsage] = useState<ModelUsage | null>(null);
+  const [scrollOffset, setScrollOffset] = useState(0);
   const id = useRef(0);
   const controller = useRef<AbortController | null>(null);
   const session = useRef<AgentSession | null>(null);
@@ -71,6 +73,7 @@ export function CorexTui({
   const addMessage = useCallback((role: TranscriptMessage["role"], content: string) => {
     id.current += 1;
     setMessages((current) => [...current, { id: id.current, role, content }]);
+    setScrollOffset(0);
   }, []);
 
   const onAgentEvent = useCallback((event: AgentEvent) => {
@@ -260,7 +263,10 @@ export function CorexTui({
         const result = await session.current!.run(
           prompt,
           turnController.signal,
-          (token) => setStreaming((current) => current + token),
+          (token) => {
+            setScrollOffset(0);
+            setStreaming((current) => current + token);
+          },
           mode,
         );
         if (result.response) addMessage("assistant", result.response);
@@ -362,6 +368,14 @@ export function CorexTui({
       setMessages([]);
       return;
     }
+    if (key.pageUp || (key.ctrl && key.upArrow)) {
+      setScrollOffset((current) => Math.min(messages.length, current + 1));
+      return;
+    }
+    if (key.pageDown || (key.ctrl && key.downArrow)) {
+      setScrollOffset((current) => Math.max(0, current - 1));
+      return;
+    }
     if (key.tab && key.shift && !busy) {
       setMode((current) => cycleMode(current));
       return;
@@ -378,35 +392,38 @@ export function CorexTui({
 
   const rows = process.stdout.rows ?? 24;
   const columns = process.stdout.columns ?? 80;
-  const messageLimit = Math.max(4, Math.floor((rows - 14) / 3));
-  const visibleMessages = visibleTail(messages, messageLimit);
+  const messageLimit = Math.max(2, Math.floor((rows - 11) / 2));
+  const end = Math.max(0, messages.length - scrollOffset);
+  const visibleMessages = messages.slice(Math.max(0, end - messageLimit), end);
   const composerActive = !busy && !overlay && !approval;
 
   return (
-    <Box flexDirection="column" paddingX={1}>
+    <Box flexDirection="column" paddingX={1} height={rows} overflow="hidden">
+      <Box flexDirection="column" alignItems="center">
+        <Text color="cyan">{columns >= 70 ? renderBanner("0.1.0") : "COREX CODE · v0.1.0"}</Text>
+      </Box>
       <Box borderStyle="single" borderColor="gray" paddingX={1} justifyContent="space-between">
         <Text bold color="cyan">COREX CODE</Text>
         <Text bold>+ New session</Text>
         {columns >= 90 ? <Text dimColor>{root}</Text> : null}
       </Box>
 
-      {messages.length === 0 && !streaming ? (
-        <Box flexDirection="column" alignItems="center" paddingY={1}>
-          <Text color="cyan">{columns >= 70 ? renderBanner("0.1.0") : "COREX CODE · v0.1.0"}</Text>
-        </Box>
-      ) : null}
-
-      <Box flexDirection="column" minHeight={3} marginY={1}>
-        {visibleMessages.map((message) => (
-          <Message key={message.id} message={message} />
-        ))}
-        {streaming ? (
-          <Box marginBottom={1}>
-            <Text color="green" bold>corex › </Text>
-            <Text>{streaming}</Text>
-          </Box>
+      <Box flexDirection="column" flexGrow={1} overflow="hidden" justifyContent="flex-end" paddingY={1}>
+        {messages.length > 0 || streaming ? (
+          <>
+            {scrollOffset > 0 ? <Text dimColor>↑ {scrollOffset} newer message(s) below</Text> : null}
+            {visibleMessages.map((message) => (
+              <Message key={message.id} message={message} />
+            ))}
+            {streaming ? (
+              <Box marginBottom={1}>
+                <Text color="green" bold>corex › </Text>
+                <Text>{streaming}</Text>
+              </Box>
+            ) : null}
+            {busy && !streaming ? <Text color="yellow">● {activity}…</Text> : null}
+          </>
         ) : null}
-        {busy && !streaming ? <Text color="yellow">● {activity}…</Text> : null}
       </Box>
 
       {approval ? (
@@ -463,7 +480,8 @@ export function CorexTui({
           <Text>
             <Text bold>shift+tab</Text><Text dimColor> mode  </Text>
             <Text bold>ctrl+p</Text><Text dimColor> commands  </Text>
-            <Text bold>/model</Text><Text dimColor> models</Text>
+            <Text bold>/model</Text><Text dimColor> models  </Text>
+            <Text bold>pgup/dn</Text><Text dimColor> scroll</Text>
           </Text>
         </Box>
       </Box>
@@ -483,9 +501,74 @@ function Message({ message }: { message: TranscriptMessage }) {
   return (
     <Box marginBottom={1}>
       <Text bold color={style.color}>{style.label} › </Text>
-      <Text>{message.content}</Text>
+      <RichText content={message.content} />
     </Box>
   );
+}
+
+function RichText({ content }: { content: string }) {
+  const blocks = parseMarkdownBlocks(content);
+  return (
+    <Box flexDirection="column" flexGrow={1}>
+      {blocks.map((block, index) =>
+        block.type === "code" ? (
+          <Box key={index} borderStyle="single" borderColor="gray" flexDirection="column" paddingX={1} marginY={1}>
+            {block.language ? <Text color="yellow" dimColor>{block.language}</Text> : null}
+            {block.content.split("\n").map((line, lineIndex) => (
+              <Text key={lineIndex}>{tokenizeCodeLine(line).map((token, tokenIndex) => (
+                <Code key={tokenIndex} token={token} />
+              ))}</Text>
+            ))}
+          </Box>
+        ) : (
+          <Box key={index} flexDirection="column">
+            {block.content.split("\n").map((line, lineIndex) => (
+              <MarkdownLine key={lineIndex} line={line} />
+            ))}
+          </Box>
+        ),
+      )}
+    </Box>
+  );
+}
+
+function MarkdownLine({ line }: { line: string }) {
+  if (line.startsWith("### ")) return <Text bold color="cyan">{line.slice(4)}</Text>;
+  if (line.startsWith("## ")) return <Text bold color="cyan">{line.slice(3)}</Text>;
+  if (line.startsWith("# ")) return <Text bold color="cyan">{line.slice(2)}</Text>;
+  const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+  if (bullet) return <Text><Text color="cyan">• </Text><InlineText content={bullet[1]!} /></Text>;
+  if (line.startsWith("+")) return <Text color="green">{line}</Text>;
+  if (line.startsWith("-") && !line.startsWith("---")) return <Text color="red">{line}</Text>;
+  return <InlineText content={line} />;
+}
+
+function InlineText({ content }: { content: string }) {
+  const parts = content.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter(Boolean);
+  return (
+    <Text>{parts.map((part, index) => {
+      if (part.startsWith("`") && part.endsWith("`")) {
+        return <Text key={index} color="cyan">{part.slice(1, -1)}</Text>;
+      }
+      if (part.startsWith("**") && part.endsWith("**")) {
+        return <Text key={index} bold>{part.slice(2, -2)}</Text>;
+      }
+      return part;
+    })}</Text>
+  );
+}
+
+function Code({ token }: { token: CodeToken }) {
+  const color = token.kind === "keyword"
+    ? "magenta"
+    : token.kind === "string"
+      ? "green"
+      : token.kind === "number"
+        ? "cyan"
+        : token.kind === "comment"
+          ? "gray"
+          : "white";
+  return <Text color={color} dimColor={token.kind === "comment"}>{token.text}</Text>;
 }
 
 function CommandPalette({ selection }: { selection: number }) {
@@ -569,7 +652,16 @@ function ApprovalPanel({ approval }: { approval: ApprovalRequest }) {
     <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1}>
       <Text bold color="yellow">Approval required · {approval.path}</Text>
       <Text>{approval.explanation}</Text>
-      <Text>{diff}</Text>
+      <Box flexDirection="column">
+        {diff.split("\n").map((line, index) => (
+          <Text
+            key={index}
+            color={line.startsWith("+") && !line.startsWith("+++") ? "green" : line.startsWith("-") && !line.startsWith("---") ? "red" : "gray"}
+          >
+            {line}
+          </Text>
+        ))}
+      </Box>
       <Text><Text bold color="green">Y</Text> apply exact patch · <Text bold color="red">N</Text> reject</Text>
     </Box>
   );

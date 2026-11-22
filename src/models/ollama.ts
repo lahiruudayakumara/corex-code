@@ -1,6 +1,7 @@
 import { Ollama, type Message, type Tool } from "ollama";
 import { CorexError } from "../errors";
 import type { ChatMessage, ModelAdapter, ModelRequest, ModelResponse, ToolCall } from "../types";
+import { parseTextToolCalls } from "./tool-fallback";
 
 function toOllamaMessage(message: ChatMessage): Message {
   const result: Message = { role: message.role, content: message.content };
@@ -36,6 +37,8 @@ export class OllamaAdapter implements ModelAdapter {
       });
       if (request.signal.aborted) stream.abort();
       let content = "";
+      let held = "";
+      let classification: "unknown" | "candidate" | "stream" = "unknown";
       const toolCalls: ToolCall[] = [];
       let usage: ModelResponse["usage"];
       for await (const chunk of stream) {
@@ -43,7 +46,21 @@ export class OllamaAdapter implements ModelAdapter {
         const token = chunk.message.content ?? "";
         if (token) {
           content += token;
-          request.onToken(token);
+          if (classification === "unknown") {
+            held += token;
+            const first = held.trimStart()[0];
+            if (first) {
+              classification = first === "{" || first === "[" || first === "`" ? "candidate" : "stream";
+              if (classification === "stream") {
+                request.onToken(held);
+                held = "";
+              }
+            }
+          } else if (classification === "candidate") {
+            held += token;
+          } else {
+            request.onToken(token);
+          }
         }
         if (chunk.message.tool_calls?.length) {
           toolCalls.push(...(chunk.message.tool_calls as ToolCall[]));
@@ -55,6 +72,15 @@ export class OllamaAdapter implements ModelAdapter {
             totalDurationMs: chunk.total_duration ? chunk.total_duration / 1_000_000 : undefined,
           };
         }
+      }
+      const textCalls = parseTextToolCalls(content, new Set(request.tools.map((tool) => tool.function.name)));
+      if (!toolCalls.length && textCalls) {
+        toolCalls.push(...textCalls);
+        content = "";
+      } else if (textCalls) {
+        content = "";
+      } else if (classification === "candidate" && held) {
+        request.onToken(held);
       }
       const message: ChatMessage = { role: "assistant", content };
       if (toolCalls.length) message.toolCalls = toolCalls;

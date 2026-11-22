@@ -57,6 +57,25 @@ function responses(): ModelResponse[] {
 }
 
 describe("agent session", () => {
+  test("keeps Plan mode read-only even when the model requests a patch", async () => {
+    const repository = await createGitRepository();
+    cleanups.push(repository.cleanup);
+    let approvalRequested = false;
+    const session = new AgentSession({
+      model: new FakeModel(responses()),
+      repository: new RepositoryTools(repository.path, { maxFileBytes: 200_000, maxSearchResults: 20 }),
+      maxSteps: 5,
+      approve: async () => {
+        approvalRequested = true;
+        return true;
+      },
+    });
+    const result = await session.run("Plan the change", new AbortController().signal, () => undefined, "plan");
+    expect(result.changedFiles).toEqual([]);
+    expect(approvalRequested).toBeFalse();
+    expect(await readFile(join(repository.path, "example.ts"), "utf8")).toContain("41");
+  });
+
   test("refuses a patch when the model did not read the file first", async () => {
     const repository = await createGitRepository();
     cleanups.push(repository.cleanup);

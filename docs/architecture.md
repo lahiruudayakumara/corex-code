@@ -83,16 +83,16 @@ them through tests and benchmarks.
 | Area | Planned technology | Purpose |
 | --- | --- | --- |
 | Language | TypeScript | Strict shared contracts across clients, runtime, tools, and providers |
-| Runtime | Node.js | Cross-platform CLI and process execution |
-| CLI | Commander and Ink | Commands, interactive rendering, progress, and approvals |
-| Model integration | Vercel AI SDK plus direct adapters where needed | Streaming, tools, and provider-neutral model events |
-| Local inference | Ollama adapter | Local model discovery, generation, and streaming |
+| Runtime and package manager | Bun | Cross-platform CLI, scripts, bundling, packages, and tests |
+| CLI | Commander, Ink, and React | Commands, interactive terminal UI, streaming, palettes, and approvals |
+| Model integration | Provider-neutral Corex contract | Streaming, typed tools, and replaceable adapters |
+| Local inference | Official Ollama JavaScript client | Local generation, tool calls, cancellation, and streaming |
 | Local data | SQLite | Transactional memory, checkpoints, indexes, and traces |
 | Lexical search | ripgrep | Fast repository content search |
 | Syntax analysis | Tree-sitter | Symbols, imports, and structural relationships |
 | Validation | Zod and JSON Schema | Configuration, tool arguments, events, and model output |
-| Testing | Vitest | Unit, integration, security, and deterministic model tests |
-| Distribution | npm and signed release artifacts | CLI installation and versioned delivery |
+| Testing | Bun test | Unit, integration, security, and deterministic model tests |
+| Distribution | Bun build, package metadata, and signed releases | CLI installation and versioned delivery |
 
 Corex wraps each dependency behind a narrow internal interface. A tool or model
 runtime can be replaced when platform support, correctness, security, or measured
@@ -181,7 +181,8 @@ an inferred command.
 
 Local models are a first-class execution mode, not a fallback. The fast path:
 
-1. discovers available models once and caches capability metadata;
+1. checks the local catalog in the terminal UI and exposes selection and
+   downloads through the `/model` modal;
 2. keeps the selected model warm when the runtime permits it;
 3. reuses stable prompt prefixes and repository summaries;
 4. streams output immediately;

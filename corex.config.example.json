@@ -1,0 +1,13 @@
+{
+  "provider": "ollama",
+  "model": "qwen2.5-coder:7b",
+  "ollama": {
+    "baseUrl": "http://127.0.0.1:11434",
+    "keepAlive": "5m"
+  },
+  "agent": {
+    "maxSteps": 12,
+    "maxFileBytes": 200000,
+    "maxSearchResults": 100
+  }
+}

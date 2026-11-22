@@ -1,7 +1,7 @@
 # Contributing to Corex Code
 
-Corex Code is at the specification stage. Contributions should keep v0.1 small,
-safe, and testable.
+Corex Code has a working v0.1 implementation. Contributions should keep it
+small, safe, and testable.
 
 ## Before starting
 
@@ -15,18 +15,15 @@ safe, and testable.
 
 ## Development workflow
 
-The exact scripts will be finalized with the initial TypeScript scaffold. The
-expected workflow is:
+Install Bun, then run:
 
 ```bash
-npm install
-npm run build
-npm test
-npm run lint
+bun install
+bun run check
 ```
 
-Do not document a script as working until it exists in `package.json` and has
-been run successfully.
+`bun run check` performs strict type-checking, linting, tests, and a production
+CLI build. Run it before submitting a change.
 
 ## Change guidelines
 

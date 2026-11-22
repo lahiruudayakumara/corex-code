@@ -22,11 +22,17 @@ The [feature catalog](docs/features.md) defines product behavior, the
 
 Goal: establish a useful terminal agent with controlled repository access.
 
+Status: implemented on the `v0.1` branch. A live inference smoke test requires a
+running Ollama service and a downloaded tool-capable model.
+
 ### Features
 
 - interactive CLI chat with streamed output;
+- Ink terminal UI with composer, conversation, modes, palettes, and inline approvals;
+- Markdown, code, syntax-color, and diff rendering for assistant output;
 - repository file listing, bounded reading, and ripgrep search;
 - one fully supported local model adapter;
+- local model discovery, interactive selection, and downloads with progress;
 - provider-neutral model and structured tool contracts;
 - strict tool-call schema validation;
 - repository-root, symlink, ignore, and secret-file protection;

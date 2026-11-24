@@ -8,11 +8,7 @@ one view.
 ## Screen layout
 
 ```text
-┌─────────────────────────────────────────────────────────────────────┐
-│ COREX CODE              + New session                 repository   │
-└─────────────────────────────────────────────────────────────────────┘
-
-                    COREX CODE banner
+                  COREX CODE · v0.1.0
 
 ╭─────────────────────────────────────────────────────────────────────╮
 │ › Ask anything…                                                     │
@@ -22,14 +18,20 @@ one view.
  Ready                    shift+tab mode  ctrl+p commands  ctrl+o models
 ```
 
-The interface uses the terminal's alternate screen. The ASCII banner and header
-stay pinned at the top, while the composer, status, and shortcuts stay pinned at
-the bottom. Only the middle conversation viewport scrolls. Narrow terminals use
-a compact banner and omit the repository path from the header.
+The interface uses the terminal's locked alternate screen. The compact text banner
+stays pinned at the top, while the composer, status, and shortcuts stay pinned
+at the bottom. Only the middle conversation viewport scrolls, using the
+mouse wheel or one screen at a time, without moving the terminal itself. Narrow
+terminals use a compact banner and omit the repository path from the footer.
+
+Startup does not contact Ollama. Use `/model` to connect and select or download
+a model; connection and model errors are shown only after that action.
 
 ## Composer
 
 - Type a prompt directly into the bordered composer.
+- Type `/` to show every command. Continue typing to filter the list, use the
+  arrow keys to choose a command, and press `Enter` to run it.
 - Press `Enter` to submit.
 - Press `Shift+Enter` or `Meta+Enter` to insert a newline when the terminal
   reports modifier keys.
@@ -41,6 +43,10 @@ a compact banner and omit the repository path from the header.
 Model output streams into the conversation. The activity line reports tool
 execution, approval requests, applied files, cancellation, and errors. Token
 usage appears in the composer status when the provider reports it.
+
+Conversation messages use a borderless chat layout: your messages appear in
+cyan on the right, while Corex responses appear in green on the left. System and
+error messages remain left-aligned with their own status colors.
 
 ## Response rendering
 
@@ -100,17 +106,35 @@ Press `Ctrl+P`, then use `Up`, `Down`, and `Enter`.
 | `/status` | Display short Git status |
 | `/diff` | Display the safe unstaged Git diff |
 | `/model` | Select an installed model or download a model |
+| `/copy` | Copy the latest complete assistant response |
+| `/copy-code [number]` | Copy a numbered code block from the latest response |
 | `/clear` | Clear the visible conversation |
 | `/new` | Start a fresh agent session |
 | `/exit` | Exit Corex |
 
 Commands may also be typed directly into the composer.
 
+Every assistant response displays a copy control below it, and every fenced code
+block displays its own copy control. `/copy-code N` remains available for
+keyboard use; omitting the number copies the last code block in the response.
+
+The displayed `[ Copy full response ]` and `[ Copy code ]` controls can also be
+clicked with the mouse. Compatible terminals change the mouse pointer to a hand
+while it is over a copy control. Keyboard commands remain available in terminals
+that do not report mouse movement or pointer shapes.
+
 ## Model picker
 
-Type `/model` to load the current Ollama catalog in an inline modal. Select an
-installed model, download the configured model, or choose “Download another
-model” and enter a model name. `Ctrl+O` opens the same modal as a shortcut.
+Type `/model` to open the model manager. It separates the active model,
+installed models, and a curated catalog of downloadable open coding models.
+Selecting an installed model activates it immediately. Selecting a model that
+is not installed downloads it, displays byte and percentage progress, and
+activates it automatically when complete.
+
+Press `Ctrl+C` during a download to pause it. Press `R` or `Enter` to retry and
+resume through Ollama's resumable blob downloads, `X` to cancel, or `Escape` to
+return to the catalog. “Download another model” accepts any valid Ollama model
+name. `Ctrl+O` opens the same manager as a shortcut.
 Switching models starts a fresh agent session so conversation state from one
 model is not silently passed to another.
 

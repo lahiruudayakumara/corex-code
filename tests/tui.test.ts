@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { cycleMode, modeLabel, moveSelection, UI_COMMANDS, visibleTail } from "../src/tui/state";
+import {
+  cycleMode,
+  filterCommands,
+  modeLabel,
+  moveSelection,
+  UI_COMMANDS,
+  visibleTail,
+} from "../src/tui/state";
 
 describe("terminal UI state", () => {
   test("cycles through Build, Plan, and Ask modes", () => {
@@ -29,5 +36,16 @@ describe("terminal UI state", () => {
       "/new",
       "/exit",
     ]);
+  });
+
+  test("filters slash commands as each character is typed", () => {
+    expect(filterCommands("/")).toEqual(UI_COMMANDS);
+    expect(filterCommands("/m").map((command) => command.name)).toEqual([
+      "/model",
+    ]);
+    expect(filterCommands("/MO").map((command) => command.name)).toEqual([
+      "/model",
+    ]);
+    expect(filterCommands("hello")).toEqual([]);
   });
 });

@@ -11,9 +11,11 @@ import {
 import { AgentSession } from "../agent/session";
 import { errorMessage } from "../errors";
 import {
-  matchesModelName,
+  buildModelChoices,
+  formatBytes,
   OllamaModelManager,
   type LocalModel,
+  type ModelChoice,
   type PullProgress,
 } from "../models/manager";
 import { OllamaAdapter } from "../models/ollama";
@@ -26,7 +28,14 @@ import type {
   ModelUsage,
 } from "../types";
 import { renderBanner } from "../ui/banner";
-import { cycleMode, modeLabel, moveSelection, UI_COMMANDS } from "./state";
+import {
+  cycleMode,
+  filterCommands,
+  modeLabel,
+  moveSelection,
+  UI_COMMANDS,
+  type UiCommand,
+} from "./state";
 import {
   parseMarkdownBlocks,
   tokenizeCodeLine,
@@ -56,7 +65,7 @@ type PendingApproval = {
 };
 
 type Overlay = "commands" | "models" | null;
-type ModelAction = "list" | "custom" | "downloading";
+type ModelAction = "list" | "custom" | "downloading" | "paused" | "failed";
 
 export function CorexTui({
   root,
@@ -83,6 +92,8 @@ export function CorexTui({
   const [modelAction, setModelAction] = useState<ModelAction>("list");
   const [modelDraft, setModelDraft] = useState("");
   const [modelProgress, setModelProgress] = useState<PullProgress | null>(null);
+  const [downloadName, setDownloadName] = useState("");
+  const [modelError, setModelError] = useState("");
   const [approval, setApproval] = useState<PendingApproval | null>(null);
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(0);
@@ -102,6 +113,11 @@ export function CorexTui({
   const pageSizeRef = useRef(Math.max(1, viewport.clientHeight - 1));
   maxScrollRef.current = maxScroll;
   pageSizeRef.current = Math.max(1, viewport.clientHeight - 1);
+  const modelChoices = buildModelChoices(
+    models,
+    modelReady ? model : null,
+    initialModel,
+  );
 
   useEffect(() => {
     const handleMouse = (chunk: Buffer | string) => {
@@ -185,65 +201,33 @@ export function CorexTui({
 
   if (!session.current) session.current = createSession(initialModel);
 
-  useEffect(() => {
-    let active = true;
-    void modelManager
-      .list()
-      .then((available) => {
-        if (!active) return;
-        setModels(available);
-        const installed = available.find((item) =>
-          matchesModelName(item.name, initialModel),
-        );
-        if (installed) {
-          setModel(installed.name);
-          setModelReady(true);
-          if (installed.name !== initialModel)
-            session.current = createSession(installed.name);
-          setActivity("Ready");
-        } else {
-          setModelReady(false);
-          setActivity(`Model not installed · use /model`);
-          addMessage(
-            "system",
-            `Model '${initialModel}' is not installed. Type /model to select or download one.`,
-          );
-        }
-      })
-      .catch((error) => {
-        if (!active) return;
-        setModelReady(false);
-        setActivity("Ollama unavailable");
-        addMessage("error", errorMessage(error));
-      });
-    return () => {
-      active = false;
-    };
-  }, [addMessage, createSession, initialModel, modelManager]);
-
   const openModels = useCallback(async () => {
     setOverlay("models");
     setSelection(0);
     setModelAction("list");
     setModelDraft("");
     setModelProgress(null);
+    setModelError("");
     setModelsLoading(true);
     try {
       setModels(await modelManager.list());
     } catch (error) {
-      setOverlay(null);
-      addMessage("error", errorMessage(error));
+      setModels([]);
+      setModelError(errorMessage(error));
+      setActivity("Ollama unavailable");
     } finally {
       setModelsLoading(false);
     }
-  }, [addMessage, modelManager]);
+  }, [modelManager]);
 
   const downloadModel = useCallback(
     async (name: string) => {
       const downloadController = new AbortController();
       controller.current = downloadController;
+      setDownloadName(name);
       setModelAction("downloading");
       setModelProgress(null);
+      setModelError("");
       setActivity(`Downloading ${name}`);
       try {
         await modelManager.pull(
@@ -260,15 +244,20 @@ export function CorexTui({
         setOverlay(null);
         setActivity(`Downloaded and selected ${name}`);
       } catch (error) {
-        setOverlay(null);
-        setModelAction("list");
-        setActivity("Model download failed");
-        addMessage("error", errorMessage(error));
+        const message = errorMessage(error);
+        if (downloadController.signal.aborted) {
+          setModelAction("paused");
+          setActivity(`Download paused · ${name}`);
+        } else {
+          setModelAction("failed");
+          setModelError(message);
+          setActivity("Model download failed");
+        }
       } finally {
         controller.current = null;
       }
     },
-    [addMessage, createSession, modelManager],
+    [createSession, modelManager],
   );
 
   const runCommand = useCallback(
@@ -390,6 +379,22 @@ export function CorexTui({
     [history, historyIndex],
   );
 
+  const commandMatches = filterCommands(input);
+  const slashMenuActive =
+    input.startsWith("/") && !busy && !overlay && !approval;
+  const selectHistoryOrCommand = useCallback(
+    (direction: -1 | 1) => {
+      if (input.startsWith("/")) {
+        setSelection((current) =>
+          moveSelection(current, direction, commandMatches.length),
+        );
+        return;
+      }
+      selectHistory(direction);
+    },
+    [commandMatches.length, input, selectHistory],
+  );
+
   useInput((keyInput, key) => {
     if (approval) {
       if (keyInput.toLowerCase() === "y") {
@@ -420,8 +425,26 @@ export function CorexTui({
         if (key.ctrl && keyInput === "c") controller.current?.abort();
         return;
       }
+      if (
+        overlay === "models" &&
+        (modelAction === "paused" || modelAction === "failed")
+      ) {
+        if ((keyInput.toLowerCase() === "r" || key.return) && downloadName) {
+          void downloadModel(downloadName);
+        } else if (keyInput.toLowerCase() === "x") {
+          setModelAction("list");
+          setModelProgress(null);
+          setModelError("");
+          setDownloadName("");
+          setActivity("Model download cancelled");
+        } else if (key.escape) {
+          setModelAction("list");
+          setModelError("");
+        }
+        return;
+      }
       const length =
-        overlay === "commands" ? UI_COMMANDS.length : models.length + 2;
+        overlay === "commands" ? UI_COMMANDS.length : modelChoices.length + 1;
       if (key.escape) {
         setOverlay(null);
       } else if (key.upArrow) {
@@ -434,17 +457,17 @@ export function CorexTui({
           setOverlay(null);
           if (command) void runCommand(command);
         } else {
-          const selected = models[selection];
-          if (selection < models.length && selected) {
+          const selected = modelChoices[selection];
+          if (selected?.installed) {
             setModel(selected.name);
             setModelReady(true);
             session.current = createSession(selected.name);
             setOverlay(null);
             setMessages([]);
-            setActivity(`Switched to ${selected.name}`);
-          } else if (selection === models.length) {
-            void downloadModel(initialModel);
-          } else {
+            setActivity(`Active model · ${selected.name}`);
+          } else if (selected) {
+            void downloadModel(selected.name);
+          } else if (selection === modelChoices.length) {
             setModelAction("custom");
             setModelDraft("");
           }
@@ -501,16 +524,6 @@ export function CorexTui({
       </Box>
 
       <Box
-        borderStyle="single"
-        borderColor="gray"
-        paddingX={1}
-        justifyContent="space-between"
-        flexShrink={0}
-      >
-        <Text bold>+ New session</Text>
-      </Box>
-
-      <Box
         ref={viewportRef}
         flexDirection="column"
         flexGrow={1}
@@ -548,18 +561,27 @@ export function CorexTui({
       {approval ? (
         <ApprovalPanel approval={approval.request} />
       ) : overlay === "commands" ? (
-        <CommandPalette selection={selection} />
+        <CommandPalette commands={UI_COMMANDS} selection={selection} />
       ) : overlay === "models" ? (
         <ModelPalette
-          models={models}
+          choices={modelChoices}
           selection={selection}
           loading={modelsLoading}
           action={modelAction}
-          configuredModel={initialModel}
           draft={modelDraft}
           progress={modelProgress}
+          downloadName={downloadName}
+          error={modelError}
         />
       ) : (
+        <>
+        {slashMenuActive ? (
+          <CommandPalette
+            commands={commandMatches}
+            selection={selection}
+            filtering
+          />
+        ) : null}
         <Box
           borderStyle="round"
           borderColor={busy ? "yellow" : "cyan"}
@@ -573,9 +595,17 @@ export function CorexTui({
             </Text>
             <TextArea
               value={input}
-              onChange={setInput}
-              onSubmit={(value) => void submit(value)}
-              onHistory={selectHistory}
+              onChange={(value) => {
+                setInput(value);
+                setSelection(0);
+              }}
+              onSubmit={(value) => {
+                const selectedCommand = commandMatches[selection]?.name;
+                void submit(
+                  slashMenuActive && selectedCommand ? selectedCommand : value,
+                );
+              }}
+              onHistory={selectHistoryOrCommand}
               placeholder={
                 busy
                   ? "Corex is working…"
@@ -602,15 +632,15 @@ export function CorexTui({
                 {modeLabel(mode)}
               </Text>
               <Text dimColor> · </Text>
-              <Text bold color={modelReady ? "white" : "red"}>
-                {model}
-                {modelReady ? "" : " (not installed)"}
+              <Text bold color={modelReady ? "white" : "gray"}>
+                {modelReady ? model : "No model selected"}
               </Text>
               <Text dimColor> · Ollama</Text>
             </Text>
             <Text dimColor>{usageText(usage)}</Text>
           </Box>
         </Box>
+        </>
       )}
 
       <Box
@@ -778,44 +808,60 @@ function Code({ token }: { token: CodeToken }) {
   );
 }
 
-function CommandPalette({ selection }: { selection: number }) {
+function CommandPalette({
+  commands,
+  selection,
+  filtering = false,
+}: {
+  commands: UiCommand[];
+  selection: number;
+  filtering?: boolean;
+}) {
   return (
     <Box
       borderStyle="round"
       borderColor="blue"
       flexDirection="column"
+      flexShrink={0}
       paddingX={1}
     >
       <Text bold color="blue">
         Commands
       </Text>
-      {UI_COMMANDS.map((command, index) => (
+      {commands.map((command, index) => (
         <Text key={command.name} inverse={index === selection}>
           {index === selection ? "›" : " "} {command.name.padEnd(9)}{" "}
           {command.description}
         </Text>
       ))}
-      <Text dimColor>↑↓ navigate · enter select · esc close</Text>
+      {!commands.length ? <Text dimColor>No matching commands</Text> : null}
+      <Text dimColor>
+        {filtering
+          ? "type to filter · ↑↓ navigate · enter run"
+          : "↑↓ navigate · enter select · esc close"}
+      </Text>
     </Box>
   );
 }
 
 function ModelPalette({
-  models,
+  choices,
   selection,
   loading,
   action,
-  configuredModel,
   draft,
   progress,
+  downloadName,
+  error,
 }: {
-  models: LocalModel[];
+  choices: ModelChoice[];
   selection: number;
   loading: boolean;
   action: ModelAction;
-  configuredModel: string;
   draft: string;
   progress: PullProgress | null;
+  downloadName: string;
+  error: string;
 }) {
   if (action === "custom") {
     return (
@@ -837,6 +883,7 @@ function ModelPalette({
     );
   }
   if (action === "downloading") {
+    const percent = progress?.percent ?? 0;
     return (
       <Box
         borderStyle="round"
@@ -845,16 +892,50 @@ function ModelPalette({
         paddingX={1}
       >
         <Text bold color="yellow">
-          Downloading model
+          Downloading {downloadName}
         </Text>
         <Text>{progress?.status ?? "Starting download…"}</Text>
-        {progress?.percent === undefined ? null : (
-          <Text color="cyan">{progress.percent}%</Text>
-        )}
-        <Text dimColor>ctrl+c cancel</Text>
+        <Text color="cyan">
+          [{progressBar(percent)}] {progress?.percent === undefined ? "…" : `${percent}%`}
+        </Text>
+        {progress?.total ? (
+          <Text dimColor>
+            {formatBytes(progress.completed)} / {formatBytes(progress.total)}
+          </Text>
+        ) : null}
+        <Text dimColor>ctrl+c pause download</Text>
       </Box>
     );
   }
+  if (action === "paused" || action === "failed") {
+    return (
+      <Box
+        borderStyle="round"
+        borderColor={action === "paused" ? "yellow" : "red"}
+        flexDirection="column"
+        paddingX={1}
+      >
+        <Text bold color={action === "paused" ? "yellow" : "red"}>
+          {action === "paused" ? "Download paused" : "Download interrupted"} ·{" "}
+          {downloadName}
+        </Text>
+        {error ? <Text color="red">{error}</Text> : null}
+        <Text dimColor>
+          R or Enter resume/retry · X cancel · Esc return to models
+        </Text>
+      </Box>
+    );
+  }
+  const firstDownload = choices.findIndex((choice) => !choice.installed);
+  const installedCount = choices.filter((choice) => choice.installed).length;
+  const windowSize = 5;
+  const windowStart = Math.min(
+    Math.max(0, selection - Math.floor(windowSize / 2)),
+    Math.max(0, choices.length - windowSize),
+  );
+  const visibleChoices = choices
+    .slice(windowStart, windowStart + windowSize)
+    .map((choice, offset) => ({ choice, index: windowStart + offset }));
   return (
     <Box
       borderStyle="round"
@@ -863,33 +944,56 @@ function ModelPalette({
       paddingX={1}
     >
       <Text bold color="magenta">
-        Select or download model
+        Models
       </Text>
       {loading ? <Text>Loading…</Text> : null}
-      {!loading && !models.length ? (
-        <Text dimColor>No installed models found</Text>
+      {error ? (
+        <Text color="red">Local Ollama unavailable · run: ollama serve</Text>
       ) : null}
-      {models.map((item, index) => (
-        <Text key={item.name} inverse={index === selection}>
-          {index === selection ? "›" : " "} {item.name}{" "}
-          {item.parameterSize ?? ""} {item.quantization ?? ""}
-        </Text>
-      ))}
       {!loading ? (
         <>
-          <Text inverse={selection === models.length}>
-            {selection === models.length ? "›" : " "} Download configured:{" "}
-            {configuredModel}
+          <Text bold color="green">
+            Installed models ({installedCount}) · ● active · ✓ ready
           </Text>
-          <Text inverse={selection === models.length + 1}>
-            {selection === models.length + 1 ? "›" : " "} Download another
-            model…
+          {!installedCount ? <Text dimColor>  None installed</Text> : null}
+          {windowStart > 0 ? <Text dimColor>  ↑ more models</Text> : null}
+          {visibleChoices.map(({ choice: item, index }) => (
+            <Box key={item.name} flexDirection="column">
+              {(index === firstDownload || (index === windowStart && !item.installed)) ? (
+                <Text bold color="cyan">
+                  Open coding models · ↓ select to download
+                </Text>
+              ) : null}
+              <Text inverse={index === selection}>
+                {index === selection ? "›" : " "}{" "}
+                {item.active ? "●" : item.installed ? "✓" : "↓"} {item.name}{" "}
+                <Text dimColor>
+                  {item.parameterSize ?? ""} {item.sizeLabel ?? ""}
+                </Text>
+              </Text>
+            </Box>
+          ))}
+          {windowStart + visibleChoices.length < choices.length ? (
+            <Text dimColor>  ↓ more models</Text>
+          ) : null}
+          <Text inverse={selection === choices.length}>
+            {selection === choices.length ? "›" : " "} + Download another model…
           </Text>
+          {choices[selection]?.description ? (
+            <Text dimColor>  {choices[selection].description}</Text>
+          ) : null}
         </>
       ) : null}
-      <Text dimColor>↑↓ navigate · enter select · esc close</Text>
+      <Text dimColor>
+        ↑↓ navigate · Enter activate/download · Esc close
+      </Text>
     </Box>
   );
+}
+
+function progressBar(percent: number, width = 24): string {
+  const filled = Math.max(0, Math.min(width, Math.round((percent / 100) * width)));
+  return `${"█".repeat(filled)}${"░".repeat(width - filled)}`;
 }
 
 function ApprovalPanel({ approval }: { approval: ApprovalRequest }) {

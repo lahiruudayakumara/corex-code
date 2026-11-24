@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildModelChoices,
   matchesModelName,
   OllamaModelManager,
   validateModelName,
@@ -43,6 +44,50 @@ describe("Ollama model management", () => {
   test("validates model names before download", () => {
     expect(() => validateModelName("qwen2.5-coder:7b")).not.toThrow();
     expect(() => validateModelName("bad model; rm -rf")).toThrow("unsupported characters");
+  });
+
+  test("combines active, installed, and downloadable open models", () => {
+    const choices = buildModelChoices(
+      [{ name: "qwen2.5-coder:3b", size: 1_800_000_000 }],
+      "qwen2.5-coder:3b",
+      "qwen2.5-coder:7b",
+    );
+    expect(choices[0]).toMatchObject({
+      name: "qwen2.5-coder:3b",
+      installed: true,
+      active: true,
+    });
+    expect(choices.find((choice) => choice.name === "qwen2.5-coder:7b"))
+      .toMatchObject({ installed: false, active: false });
+  });
+
+  test("allows a cancelled pull to be retried for resumable downloads", async () => {
+    let pulls = 0;
+    let aborts = 0;
+    const client = clientWithModels([]);
+    client.abort = () => {
+      aborts += 1;
+    };
+    client.pull = async () => {
+      pulls += 1;
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield { status: "downloading", completed: 25, total: 100 };
+          yield { status: "success", completed: 100, total: 100 };
+        },
+      };
+    };
+    const manager = new OllamaModelManager("http://localhost:11434", client);
+    const controller = new AbortController();
+    await expect(
+      manager.pull(
+        "qwen2.5-coder:3b",
+        () => controller.abort(),
+        controller.signal,
+      ),
+    ).rejects.toThrow("cancelled");
+    await manager.pull("qwen2.5-coder:3b", () => undefined);
+    expect({ pulls, aborts }).toEqual({ pulls: 2, aborts: 1 });
   });
 
 });

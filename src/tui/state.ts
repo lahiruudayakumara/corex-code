@@ -31,6 +31,12 @@ export function moveSelection(current: number, direction: -1 | 1, length: number
   return (current + direction + length) % length;
 }
 
+export function filterCommands(query: string): UiCommand[] {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized.startsWith("/")) return [];
+  return UI_COMMANDS.filter((command) => command.name.startsWith(normalized));
+}
+
 export function visibleTail<T>(items: T[], limit: number): T[] {
   return items.slice(Math.max(0, items.length - Math.max(1, limit)));
 }

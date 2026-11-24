@@ -640,8 +640,8 @@ export function CorexTui({
   return (
     <Box flexDirection="column" paddingX={1} height={rows} overflow="hidden">
       <Box flexDirection="column" alignItems="center" flexShrink={0}>
-        <Text color="cyan">
-          {columns >= 70 ? renderBanner("0.1.0") : "COREX CODE · v0.1.0"}
+        <Text color="cyan" bold>
+          {renderBanner("0.1.0")}
         </Text>
       </Box>
 

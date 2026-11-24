@@ -30,6 +30,7 @@ import type {
 } from "../types";
 import { renderBanner } from "../ui/banner";
 import { copyText } from "../ui/clipboard";
+import { COREX_VERSION } from "../version";
 import {
   cycleMode,
   filterCommands,
@@ -641,7 +642,7 @@ export function CorexTui({
     <Box flexDirection="column" paddingX={1} height={rows} overflow="hidden">
       <Box flexDirection="column" alignItems="center" flexShrink={0}>
         <Text color="cyan" bold>
-          {renderBanner("0.1.0")}
+          {renderBanner(COREX_VERSION)}
         </Text>
       </Box>
 
@@ -851,7 +852,7 @@ function Message({
         />
         {message.role === "assistant" ? (
           <CopyButton
-            label="[ Copy full response ]"
+            label="[ Copy ]"
             onCopy={() => void copyContent(message.content, "complete response")}
             registerClickTarget={registerClickTarget}
           />
@@ -888,7 +889,7 @@ function RichText({
                 {block.language || "code"}
               </Text>
               <CopyButton
-                label="[ Copy code ]"
+                label="[ Copy ]"
                 onCopy={() =>
                   void copyContent(
                     block.content,

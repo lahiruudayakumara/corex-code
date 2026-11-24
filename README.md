@@ -40,6 +40,20 @@ Prerequisites:
 - ripgrep;
 - Ollama with a tool-capable coding model.
 
+Install the published CLI:
+
+```bash
+npm install --global corex-code
+corex --version
+corex
+```
+
+The npm package uses Bun as its runtime, so Bun must be installed even when npm
+is used for package installation. Corex starts without contacting Ollama; use
+`/model` when you are ready to select or download a local model.
+
+For development from source:
+
 ```bash
 bun install
 cp corex.config.example.json corex.config.json

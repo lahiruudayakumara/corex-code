@@ -13,6 +13,7 @@ import { RepositoryTools } from "./repository/tools";
 import { runTui } from "./tui/run";
 import type { AgentEvent, ApprovalRequest } from "./types";
 import { renderBanner } from "./ui/banner";
+import { COREX_VERSION } from "./version";
 
 const colors = {
   cyan: (text: string) => `\u001b[36m${text}\u001b[0m`,
@@ -25,7 +26,7 @@ const colors = {
 const program = new Command()
   .name("corex")
   .description("Local-first AI coding agent")
-  .version("0.1.0")
+  .version(COREX_VERSION)
   .argument("[prompt...]", "run one prompt, or omit it for interactive mode")
   .option("-C, --cwd <path>", "repository directory", process.cwd())
   .option("--model <name>", "override the configured Ollama model")
@@ -90,7 +91,7 @@ async function run(prompt: string[], options: { cwd: string; model?: string; hos
 
   try {
     if (prompt.length) {
-      console.log(colors.cyan(renderBanner("0.1.0")));
+      console.log(colors.cyan(renderBanner(COREX_VERSION)));
       console.log(colors.dim(`Repository: ${root}`));
       if (!(await manager.isInstalled(modelName))) {
         throw new CorexError(`Model '${modelName}' is not installed. Run: corex models pull ${modelName}`);

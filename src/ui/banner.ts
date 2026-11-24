@@ -1,13 +1,25 @@
+
 const COREX_CODE_BANNER = String.raw`
-  ____ ___  ____  _______  __   ____ ___  ____  _____
- / ___/ _ \|  _ \| ____\ \/ /  / ___/ _ \|  _ \| ____|
-| |  | | | | |_) |  _|  \  /  | |  | | | | | | |  _|
-| |__| |_| |  _ <| |___ /  \  | |__| |_| | |_| | |___
- \____\___/|_| \_\_____/_/\_\  \____\___/|____/|_____|
+  ___ ___  ___  ___ __  __   ___ ___  ___  ___
+ / __/ _ \| _ \| __|\ \/ /  / __/ _ \|   \| __|
+| (_| (_) |   /| _|  >  <  | (_| (_) | |) | _|
+ \___\___/|_|_\|___|/_/\_\  \___\___/|___/|___|
 `.replace(/^\n/, "").trimEnd();
 
 export function renderBanner(version: string): string {
-  return `${COREX_CODE_BANNER}\n\n  Local-first coding agent · v${version}`;
+  const footer = `Type /help for commands · v${version}`;
+
+  const width = Math.max(
+    ...COREX_CODE_BANNER.split("\n").map(line => line.length)
+  );
+
+  return [
+    COREX_CODE_BANNER,
+    "",
+    footer.padStart(
+      Math.floor((width + footer.length) / 2)
+    ),
+  ].join("\n");
 }
 
 export { COREX_CODE_BANNER };

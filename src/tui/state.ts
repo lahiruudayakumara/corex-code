@@ -10,6 +10,8 @@ export const UI_COMMANDS: UiCommand[] = [
   { name: "/status", description: "Show Git status" },
   { name: "/diff", description: "Show the safe unstaged Git diff" },
   { name: "/model", description: "Select or download an Ollama model" },
+  { name: "/copy", description: "Copy the latest complete response" },
+  { name: "/copy-code", description: "Copy a code block from the latest response" },
   { name: "/clear", description: "Clear visible conversation" },
   { name: "/new", description: "Start a new agent session" },
   { name: "/exit", description: "Exit Corex" },
@@ -34,7 +36,8 @@ export function moveSelection(current: number, direction: -1 | 1, length: number
 export function filterCommands(query: string): UiCommand[] {
   const normalized = query.trim().toLowerCase();
   if (!normalized.startsWith("/")) return [];
-  return UI_COMMANDS.filter((command) => command.name.startsWith(normalized));
+  const commandName = normalized.split(/\s+/, 1)[0]!;
+  return UI_COMMANDS.filter((command) => command.name.startsWith(commandName));
 }
 
 export function visibleTail<T>(items: T[], limit: number): T[] {

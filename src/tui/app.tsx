@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Box,
+  measureElement,
   Text,
   useApp,
   useBoxMetrics,
@@ -28,6 +29,7 @@ import type {
   ModelUsage,
 } from "../types";
 import { renderBanner } from "../ui/banner";
+import { copyText } from "../ui/clipboard";
 import {
   cycleMode,
   filterCommands,
@@ -63,6 +65,20 @@ type PendingApproval = {
   request: ApprovalRequest;
   resolve(approved: boolean): void;
 };
+
+type ClickTarget = {
+  element: DOMElement;
+  onClick(): void;
+  onHover?(hovering: boolean): void;
+};
+
+function setMousePointer(active: boolean): void {
+  process.stdout.write(
+    active
+      ? "\u001b]22;hand2\u0007\u001b]22;pointer\u0007"
+      : "\u001b]22;xterm\u0007\u001b]22;\u0007",
+  );
+}
 
 type Overlay = "commands" | "models" | null;
 type ModelAction = "list" | "custom" | "downloading" | "paused" | "failed";
@@ -104,47 +120,100 @@ export function CorexTui({
   const session = useRef<AgentSession | null>(null);
   const viewportRef = useRef<DOMElement | null>(null);
   const contentRef = useRef<DOMElement | null>(null);
+  const clickTargets = useRef(new Set<ClickTarget>());
+  const pointerActive = useRef(false);
+  const hoveredClickTarget = useRef<ClickTarget | null>(null);
   const viewport = useBoxMetrics(viewportRef);
   const content = useBoxMetrics(contentRef);
   const { rows, columns } = useWindowSize();
   const maxScroll = Math.max(0, content.height - viewport.clientHeight);
   const scrollTop = Math.max(0, maxScroll - Math.min(scrollFromBottom, maxScroll));
+  const scrollTopRef = useRef(scrollTop);
   const maxScrollRef = useRef(maxScroll);
   const pageSizeRef = useRef(Math.max(1, viewport.clientHeight - 1));
   maxScrollRef.current = maxScroll;
   pageSizeRef.current = Math.max(1, viewport.clientHeight - 1);
+  scrollTopRef.current = scrollTop;
   const modelChoices = buildModelChoices(
     models,
     modelReady ? model : null,
     initialModel,
   );
 
+  const registerClickTarget = useCallback((target: ClickTarget) => {
+    clickTargets.current.add(target);
+    return () => {
+      clickTargets.current.delete(target);
+    };
+  }, []);
+
   useEffect(() => {
     const handleMouse = (chunk: Buffer | string) => {
       const input = chunk.toString();
       for (const sequence of input.split("\u001b[<").slice(1)) {
-        const match = sequence.match(/^(\d+);\d+;\d+[Mm]/);
+        const match = sequence.match(/^(\d+);(\d+);(\d+)([Mm])/);
         if (!match) continue;
         const button = Number(match[1]);
-        if ((button & 64) === 0) continue;
-        const direction = (button & 1) === 0 ? 1 : -1;
-        setScrollFromBottom((current) =>
-          Math.max(
-            0,
-            Math.min(
-              maxScrollRef.current,
-              current + direction * Math.max(3, Math.floor(pageSizeRef.current / 3)),
+        if ((button & 64) !== 0) {
+          const direction = (button & 1) === 0 ? 1 : -1;
+          setScrollFromBottom((current) =>
+            Math.max(
+              0,
+              Math.min(
+                maxScrollRef.current,
+                current +
+                  direction * Math.max(3, Math.floor(pageSizeRef.current / 3)),
+              ),
             ),
-          ),
-        );
+          );
+          continue;
+        }
+        const x = Number(match[2]) - 1;
+        const y = Number(match[3]) - 1;
+        const viewportBounds = viewportRef.current
+          ? measureElement(viewportRef.current)
+          : null;
+        let hoveredTarget: ClickTarget | undefined;
+        if (
+          viewportBounds &&
+          y >= viewportBounds.y &&
+          y < viewportBounds.y + viewportBounds.height
+        ) {
+          for (const target of [...clickTargets.current].reverse()) {
+            const bounds = measureElement(target.element);
+            const visibleY = bounds.y - scrollTopRef.current;
+            if (
+              x >= bounds.x &&
+              x < bounds.x + bounds.width &&
+              y >= visibleY &&
+              y < visibleY + bounds.height
+            ) {
+              hoveredTarget = target;
+              break;
+            }
+          }
+        }
+        const hovering = Boolean(hoveredTarget);
+        if (hoveredTarget !== hoveredClickTarget.current) {
+          hoveredClickTarget.current?.onHover?.(false);
+          hoveredTarget?.onHover?.(true);
+          hoveredClickTarget.current = hoveredTarget ?? null;
+        }
+        if (hovering !== pointerActive.current) {
+          pointerActive.current = hovering;
+          setMousePointer(hovering);
+        }
+        if (button === 0 && match[4] === "M") hoveredTarget?.onClick();
       }
     };
 
-    process.stdout.write("\u001b[?1000h\u001b[?1006h");
+    process.stdout.write("\u001b[?1003h\u001b[?1006h");
     process.stdin.on("data", handleMouse);
     return () => {
       process.stdin.off("data", handleMouse);
-      process.stdout.write("\u001b[?1006l\u001b[?1000l");
+      hoveredClickTarget.current?.onHover?.(false);
+      setMousePointer(false);
+      process.stdout.write("\u001b[?1006l\u001b[?1003l");
     };
   }, []);
 
@@ -155,6 +224,18 @@ export function CorexTui({
       setScrollFromBottom(0);
     },
     [],
+  );
+
+  const copyContent = useCallback(
+    async (content: string, label: string) => {
+      try {
+        const method = await copyText(content);
+        setActivity(`Copied ${label} to ${method}`);
+      } catch (error) {
+        addMessage("error", errorMessage(error));
+      }
+    },
+    [addMessage],
   );
 
   const onAgentEvent = useCallback(
@@ -262,7 +343,48 @@ export function CorexTui({
 
   const runCommand = useCallback(
     async (command: string): Promise<boolean> => {
-      switch (command.trim().toLowerCase()) {
+      const normalized = command.trim().toLowerCase();
+      if (normalized === "/copy") {
+        const response = [...messages]
+          .reverse()
+          .find((message) => message.role === "assistant");
+        if (!response) {
+          addMessage("error", "No assistant response is available to copy.");
+          return true;
+        }
+        const method = await copyText(response.content);
+        setActivity(`Copied complete response to ${method}`);
+        return true;
+      }
+      const codeCopy = normalized.match(/^\/copy-code(?:\s+(\d+))?$/);
+      if (codeCopy) {
+        const response = [...messages]
+          .reverse()
+          .find((message) => message.role === "assistant");
+        const codeBlocks = response
+          ? parseMarkdownBlocks(response.content).filter(
+              (block) => block.type === "code",
+            )
+          : [];
+        const requested = codeCopy[1]
+          ? Number(codeCopy[1]) - 1
+          : codeBlocks.length - 1;
+        const code = codeBlocks[requested];
+        if (!code || code.type !== "code") {
+          addMessage(
+            "error",
+            codeBlocks.length
+              ? `Code block not found. Choose 1-${codeBlocks.length}.`
+              : "The latest response has no code blocks to copy.",
+          );
+          return true;
+        }
+        const method = await copyText(code.content);
+        setActivity(`Copied code block ${requested + 1} to ${method}`);
+        return true;
+      }
+
+      switch (normalized) {
         case "/help":
           addMessage(
             "system",
@@ -303,7 +425,7 @@ export function CorexTui({
           return false;
       }
     },
-    [addMessage, createSession, exit, model, openModels, root],
+    [addMessage, createSession, exit, messages, model, openModels, root],
   );
 
   const submit = useCallback(
@@ -540,7 +662,12 @@ export function CorexTui({
           {messages.length > 0 || streaming ? (
             <>
               {messages.map((message) => (
-                <Message key={message.id} message={message} />
+                <Message
+                  key={message.id}
+                  message={message}
+                  copyContent={copyContent}
+                  registerClickTarget={registerClickTarget}
+                />
               ))}
               {streaming ? (
                 <Box marginBottom={1}>
@@ -601,8 +728,11 @@ export function CorexTui({
               }}
               onSubmit={(value) => {
                 const selectedCommand = commandMatches[selection]?.name;
+                const hasArguments = value.trim().includes(" ");
                 void submit(
-                  slashMenuActive && selectedCommand ? selectedCommand : value,
+                  slashMenuActive && selectedCommand && !hasArguments
+                    ? selectedCommand
+                    : value,
                 );
               }}
               onHistory={selectHistoryOrCommand}
@@ -674,7 +804,15 @@ export function CorexTui({
   );
 }
 
-function Message({ message }: { message: TranscriptMessage }) {
+function Message({
+  message,
+  copyContent,
+  registerClickTarget,
+}: {
+  message: TranscriptMessage;
+  copyContent(content: string, label: string): Promise<void>;
+  registerClickTarget(target: ClickTarget): () => void;
+}) {
   const style =
     message.role === "user"
       ? { label: "you", color: "cyan" }
@@ -688,12 +826,33 @@ function Message({ message }: { message: TranscriptMessage }) {
       <Text bold color={style.color}>
         {style.label} ›{" "}
       </Text>
-      <RichText content={message.content} />
+      <Box flexDirection="column" flexGrow={1}>
+        <RichText
+          content={message.content}
+          copyContent={copyContent}
+          registerClickTarget={registerClickTarget}
+        />
+        {message.role === "assistant" ? (
+          <CopyButton
+            label="[ Copy full response ]"
+            onCopy={() => void copyContent(message.content, "complete response")}
+            registerClickTarget={registerClickTarget}
+          />
+        ) : null}
+      </Box>
     </Box>
   );
 }
 
-function RichText({ content }: { content: string }) {
+function RichText({
+  content,
+  copyContent,
+  registerClickTarget,
+}: {
+  content: string;
+  copyContent(content: string, label: string): Promise<void>;
+  registerClickTarget(target: ClickTarget): () => void;
+}) {
   const blocks = parseMarkdownBlocks(content);
   return (
     <Box flexDirection="column" flexGrow={1}>
@@ -707,11 +866,25 @@ function RichText({ content }: { content: string }) {
             paddingX={1}
             marginY={1}
           >
-            {block.language ? (
+            <Box justifyContent="space-between">
               <Text color="yellow" dimColor>
-                {block.language}
+                {block.language || "code"}
               </Text>
-            ) : null}
+              <CopyButton
+                label="[ Copy code ]"
+                onCopy={() =>
+                  void copyContent(
+                    block.content,
+                    `code block ${
+                      blocks
+                        .slice(0, index + 1)
+                        .filter((candidate) => candidate.type === "code").length
+                    }`,
+                  )
+                }
+                registerClickTarget={registerClickTarget}
+              />
+            </Box>
             {block.content.split("\n").map((line, lineIndex) => (
               <Text key={lineIndex}>
                 {tokenizeCodeLine(line).map((token, tokenIndex) => (
@@ -728,6 +901,39 @@ function RichText({ content }: { content: string }) {
           </Box>
         ),
       )}
+    </Box>
+  );
+}
+
+function CopyButton({
+  label,
+  onCopy,
+  registerClickTarget,
+}: {
+  label: string;
+  onCopy(): void;
+  registerClickTarget(target: ClickTarget): () => void;
+}) {
+  const ref = useRef<DOMElement | null>(null);
+  const [hovering, setHovering] = useState(false);
+  const onCopyRef = useRef(onCopy);
+  onCopyRef.current = onCopy;
+
+  useEffect(() => {
+    if (!ref.current) return;
+    const target: ClickTarget = {
+      element: ref.current,
+      onClick: () => onCopyRef.current(),
+      onHover: setHovering,
+    };
+    return registerClickTarget(target);
+  }, [registerClickTarget]);
+
+  return (
+    <Box ref={ref}>
+      <Text color="cyan" bold inverse={hovering}>
+        {label}
+      </Text>
     </Box>
   );
 }

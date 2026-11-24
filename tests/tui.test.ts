@@ -32,6 +32,8 @@ describe("terminal UI state", () => {
       "/status",
       "/diff",
       "/model",
+      "/copy",
+      "/copy-code",
       "/clear",
       "/new",
       "/exit",
@@ -45,6 +47,9 @@ describe("terminal UI state", () => {
     ]);
     expect(filterCommands("/MO").map((command) => command.name)).toEqual([
       "/model",
+    ]);
+    expect(filterCommands("/copy-code 2").map((command) => command.name)).toEqual([
+      "/copy-code",
     ]);
     expect(filterCommands("hello")).toEqual([]);
   });

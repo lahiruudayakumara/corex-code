@@ -657,6 +657,7 @@ export function CorexTui({
           ref={contentRef}
           flexDirection="column"
           flexShrink={0}
+          width="100%"
           paddingY={1}
         >
           {messages.length > 0 || streaming ? (
@@ -665,6 +666,7 @@ export function CorexTui({
                 <Message
                   key={message.id}
                   message={message}
+                  terminalColumns={columns}
                   copyContent={copyContent}
                   registerClickTarget={registerClickTarget}
                 />
@@ -806,15 +808,18 @@ export function CorexTui({
 
 function Message({
   message,
+  terminalColumns,
   copyContent,
   registerClickTarget,
 }: {
   message: TranscriptMessage;
+  terminalColumns: number;
   copyContent(content: string, label: string): Promise<void>;
   registerClickTarget(target: ClickTarget): () => void;
 }) {
+  const isUser = message.role === "user";
   const style =
-    message.role === "user"
+    isUser
       ? { label: "you", color: "cyan" }
       : message.role === "assistant"
         ? { label: "corex", color: "green" }
@@ -822,11 +827,23 @@ function Message({
           ? { label: "error", color: "red" }
           : { label: "info", color: "yellow" };
   return (
-    <Box marginBottom={1}>
-      <Text bold color={style.color}>
-        {style.label} ›{" "}
-      </Text>
-      <Box flexDirection="column" flexGrow={1}>
+    <Box
+      marginBottom={1}
+      flexDirection="row"
+      justifyContent={isUser ? "flex-end" : "flex-start"}
+      width="100%"
+    >
+      <Box
+        flexDirection="column"
+        width={isUser ? undefined : "88%"}
+        maxWidth={
+          isUser ? Math.max(20, Math.floor(terminalColumns * 0.72)) : undefined
+        }
+        alignItems={isUser ? "flex-end" : "stretch"}
+      >
+        <Text bold color={style.color}>
+          {style.label}
+        </Text>
         <RichText
           content={message.content}
           copyContent={copyContent}

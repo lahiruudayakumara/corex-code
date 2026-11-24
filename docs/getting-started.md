@@ -15,6 +15,17 @@ before applying an exact patch.
 On a 16 GB Apple silicon machine, begin with a smaller quantized coding model.
 Model quality and speed depend on the model, quantization, context, and runtime.
 
+## Install from npm
+
+```bash
+npm install --global corex-code
+corex --version
+corex
+```
+
+The npm registry distributes the package, while Bun runs the installed CLI.
+Corex opens without contacting Ollama and waits for `/model` before model setup.
+
 ## Install for development
 
 ```bash

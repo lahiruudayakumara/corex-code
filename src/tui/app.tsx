@@ -1,15 +1,49 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Box, Text, useApp, useInput } from "ink";
+import {
+  Box,
+  measureElement,
+  Text,
+  useApp,
+  useBoxMetrics,
+  useInput,
+  useWindowSize,
+  type DOMElement,
+} from "ink";
 import { AgentSession } from "../agent/session";
 import { errorMessage } from "../errors";
-import { matchesModelName, OllamaModelManager, type LocalModel, type PullProgress } from "../models/manager";
+import {
+  buildModelChoices,
+  formatBytes,
+  OllamaModelManager,
+  type LocalModel,
+  type ModelChoice,
+  type PullProgress,
+} from "../models/manager";
 import { OllamaAdapter } from "../models/ollama";
 import { gitDiff, gitStatus } from "../repository/git";
 import type { RepositoryTools } from "../repository/tools";
-import type { AgentEvent, AgentMode, ApprovalRequest, ModelUsage } from "../types";
+import type {
+  AgentEvent,
+  AgentMode,
+  ApprovalRequest,
+  ModelUsage,
+} from "../types";
 import { renderBanner } from "../ui/banner";
-import { cycleMode, modeLabel, moveSelection, UI_COMMANDS } from "./state";
-import { parseMarkdownBlocks, tokenizeCodeLine, type CodeToken } from "./markdown";
+import { copyText } from "../ui/clipboard";
+import { COREX_VERSION } from "../version";
+import {
+  cycleMode,
+  filterCommands,
+  modeLabel,
+  moveSelection,
+  UI_COMMANDS,
+  type UiCommand,
+} from "./state";
+import {
+  parseMarkdownBlocks,
+  tokenizeCodeLine,
+  type CodeToken,
+} from "./markdown";
 import { TextArea } from "./text-area";
 
 type CorexTuiProps = {
@@ -33,8 +67,22 @@ type PendingApproval = {
   resolve(approved: boolean): void;
 };
 
+type ClickTarget = {
+  element: DOMElement;
+  onClick(): void;
+  onHover?(hovering: boolean): void;
+};
+
+function setMousePointer(active: boolean): void {
+  process.stdout.write(
+    active
+      ? "\u001b]22;hand2\u0007\u001b]22;pointer\u0007"
+      : "\u001b]22;xterm\u0007\u001b]22;\u0007",
+  );
+}
+
 type Overlay = "commands" | "models" | null;
-type ModelAction = "list" | "custom" | "downloading";
+type ModelAction = "list" | "custom" | "downloading" | "paused" | "failed";
 
 export function CorexTui({
   root,
@@ -61,39 +109,161 @@ export function CorexTui({
   const [modelAction, setModelAction] = useState<ModelAction>("list");
   const [modelDraft, setModelDraft] = useState("");
   const [modelProgress, setModelProgress] = useState<PullProgress | null>(null);
+  const [downloadName, setDownloadName] = useState("");
+  const [modelError, setModelError] = useState("");
   const [approval, setApproval] = useState<PendingApproval | null>(null);
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(0);
   const [usage, setUsage] = useState<ModelUsage | null>(null);
-  const [scrollOffset, setScrollOffset] = useState(0);
+  const [scrollFromBottom, setScrollFromBottom] = useState(0);
   const id = useRef(0);
   const controller = useRef<AbortController | null>(null);
   const session = useRef<AgentSession | null>(null);
+  const viewportRef = useRef<DOMElement | null>(null);
+  const contentRef = useRef<DOMElement | null>(null);
+  const clickTargets = useRef(new Set<ClickTarget>());
+  const pointerActive = useRef(false);
+  const hoveredClickTarget = useRef<ClickTarget | null>(null);
+  const viewport = useBoxMetrics(viewportRef);
+  const content = useBoxMetrics(contentRef);
+  const { rows, columns } = useWindowSize();
+  const maxScroll = Math.max(0, content.height - viewport.clientHeight);
+  const scrollTop = Math.max(0, maxScroll - Math.min(scrollFromBottom, maxScroll));
+  const scrollTopRef = useRef(scrollTop);
+  const maxScrollRef = useRef(maxScroll);
+  const pageSizeRef = useRef(Math.max(1, viewport.clientHeight - 1));
+  maxScrollRef.current = maxScroll;
+  pageSizeRef.current = Math.max(1, viewport.clientHeight - 1);
+  scrollTopRef.current = scrollTop;
+  const modelChoices = buildModelChoices(
+    models,
+    modelReady ? model : null,
+    initialModel,
+  );
 
-  const addMessage = useCallback((role: TranscriptMessage["role"], content: string) => {
-    id.current += 1;
-    setMessages((current) => [...current, { id: id.current, role, content }]);
-    setScrollOffset(0);
+  const registerClickTarget = useCallback((target: ClickTarget) => {
+    clickTargets.current.add(target);
+    return () => {
+      clickTargets.current.delete(target);
+    };
   }, []);
 
-  const onAgentEvent = useCallback((event: AgentEvent) => {
-    switch (event.type) {
-      case "tool_start":
-        setActivity(`Running ${event.tool}${event.summary ? ` · ${event.summary}` : ""}`);
-        break;
-      case "tool_result":
-        setActivity(`${event.tool} complete`);
-        break;
-      case "approval":
-        setActivity(event.approved ? `Applied ${event.path}` : `Rejected ${event.path}`);
-        break;
-      case "usage":
-        setUsage(event.usage);
-        break;
-      case "warning":
-        addMessage("system", `Warning: ${event.message}`);
-    }
-  }, [addMessage]);
+  useEffect(() => {
+    const handleMouse = (chunk: Buffer | string) => {
+      const input = chunk.toString();
+      for (const sequence of input.split("\u001b[<").slice(1)) {
+        const match = sequence.match(/^(\d+);(\d+);(\d+)([Mm])/);
+        if (!match) continue;
+        const button = Number(match[1]);
+        if ((button & 64) !== 0) {
+          const direction = (button & 1) === 0 ? 1 : -1;
+          setScrollFromBottom((current) =>
+            Math.max(
+              0,
+              Math.min(
+                maxScrollRef.current,
+                current +
+                  direction * Math.max(3, Math.floor(pageSizeRef.current / 3)),
+              ),
+            ),
+          );
+          continue;
+        }
+        const x = Number(match[2]) - 1;
+        const y = Number(match[3]) - 1;
+        const viewportBounds = viewportRef.current
+          ? measureElement(viewportRef.current)
+          : null;
+        let hoveredTarget: ClickTarget | undefined;
+        if (
+          viewportBounds &&
+          y >= viewportBounds.y &&
+          y < viewportBounds.y + viewportBounds.height
+        ) {
+          for (const target of [...clickTargets.current].reverse()) {
+            const bounds = measureElement(target.element);
+            const visibleY = bounds.y - scrollTopRef.current;
+            if (
+              x >= bounds.x &&
+              x < bounds.x + bounds.width &&
+              y >= visibleY &&
+              y < visibleY + bounds.height
+            ) {
+              hoveredTarget = target;
+              break;
+            }
+          }
+        }
+        const hovering = Boolean(hoveredTarget);
+        if (hoveredTarget !== hoveredClickTarget.current) {
+          hoveredClickTarget.current?.onHover?.(false);
+          hoveredTarget?.onHover?.(true);
+          hoveredClickTarget.current = hoveredTarget ?? null;
+        }
+        if (hovering !== pointerActive.current) {
+          pointerActive.current = hovering;
+          setMousePointer(hovering);
+        }
+        if (button === 0 && match[4] === "M") hoveredTarget?.onClick();
+      }
+    };
+
+    process.stdout.write("\u001b[?1003h\u001b[?1006h");
+    process.stdin.on("data", handleMouse);
+    return () => {
+      process.stdin.off("data", handleMouse);
+      hoveredClickTarget.current?.onHover?.(false);
+      setMousePointer(false);
+      process.stdout.write("\u001b[?1006l\u001b[?1003l");
+    };
+  }, []);
+
+  const addMessage = useCallback(
+    (role: TranscriptMessage["role"], content: string) => {
+      id.current += 1;
+      setMessages((current) => [...current, { id: id.current, role, content }]);
+      setScrollFromBottom(0);
+    },
+    [],
+  );
+
+  const copyContent = useCallback(
+    async (content: string, label: string) => {
+      try {
+        const method = await copyText(content);
+        setActivity(`Copied ${label} to ${method}`);
+      } catch (error) {
+        addMessage("error", errorMessage(error));
+      }
+    },
+    [addMessage],
+  );
+
+  const onAgentEvent = useCallback(
+    (event: AgentEvent) => {
+      switch (event.type) {
+        case "tool_start":
+          setActivity(
+            `Running ${event.tool}${event.summary ? ` · ${event.summary}` : ""}`,
+          );
+          break;
+        case "tool_result":
+          setActivity(`${event.tool} complete`);
+          break;
+        case "approval":
+          setActivity(
+            event.approved ? `Applied ${event.path}` : `Rejected ${event.path}`,
+          );
+          break;
+        case "usage":
+          setUsage(event.usage);
+          break;
+        case "warning":
+          addMessage("system", `Warning: ${event.message}`);
+      }
+    },
+    [addMessage],
+  );
 
   const createSession = useCallback(
     (modelName: string) =>
@@ -113,62 +283,40 @@ export function CorexTui({
 
   if (!session.current) session.current = createSession(initialModel);
 
-  useEffect(() => {
-    let active = true;
-    void modelManager
-      .list()
-      .then((available) => {
-        if (!active) return;
-        setModels(available);
-        const installed = available.find((item) => matchesModelName(item.name, initialModel));
-        if (installed) {
-          setModel(installed.name);
-          setModelReady(true);
-          if (installed.name !== initialModel) session.current = createSession(installed.name);
-          setActivity("Ready");
-        } else {
-          setModelReady(false);
-          setActivity(`Model not installed · use /model`);
-          addMessage("system", `Model '${initialModel}' is not installed. Type /model to select or download one.`);
-        }
-      })
-      .catch((error) => {
-        if (!active) return;
-        setModelReady(false);
-        setActivity("Ollama unavailable");
-        addMessage("error", errorMessage(error));
-      });
-    return () => {
-      active = false;
-    };
-  }, [addMessage, createSession, initialModel, modelManager]);
-
   const openModels = useCallback(async () => {
     setOverlay("models");
     setSelection(0);
     setModelAction("list");
     setModelDraft("");
     setModelProgress(null);
+    setModelError("");
     setModelsLoading(true);
     try {
       setModels(await modelManager.list());
     } catch (error) {
-      setOverlay(null);
-      addMessage("error", errorMessage(error));
+      setModels([]);
+      setModelError(errorMessage(error));
+      setActivity("Ollama unavailable");
     } finally {
       setModelsLoading(false);
     }
-  }, [addMessage, modelManager]);
+  }, [modelManager]);
 
   const downloadModel = useCallback(
     async (name: string) => {
       const downloadController = new AbortController();
       controller.current = downloadController;
+      setDownloadName(name);
       setModelAction("downloading");
       setModelProgress(null);
+      setModelError("");
       setActivity(`Downloading ${name}`);
       try {
-        await modelManager.pull(name, setModelProgress, downloadController.signal);
+        await modelManager.pull(
+          name,
+          setModelProgress,
+          downloadController.signal,
+        );
         const available = await modelManager.list();
         setModels(available);
         setModel(name);
@@ -178,26 +326,74 @@ export function CorexTui({
         setOverlay(null);
         setActivity(`Downloaded and selected ${name}`);
       } catch (error) {
-        setOverlay(null);
-        setModelAction("list");
-        setActivity("Model download failed");
-        addMessage("error", errorMessage(error));
+        const message = errorMessage(error);
+        if (downloadController.signal.aborted) {
+          setModelAction("paused");
+          setActivity(`Download paused · ${name}`);
+        } else {
+          setModelAction("failed");
+          setModelError(message);
+          setActivity("Model download failed");
+        }
       } finally {
         controller.current = null;
       }
     },
-    [addMessage, createSession, modelManager],
+    [createSession, modelManager],
   );
 
   const runCommand = useCallback(
     async (command: string): Promise<boolean> => {
-      switch (command.trim().toLowerCase()) {
+      const normalized = command.trim().toLowerCase();
+      if (normalized === "/copy") {
+        const response = [...messages]
+          .reverse()
+          .find((message) => message.role === "assistant");
+        if (!response) {
+          addMessage("error", "No assistant response is available to copy.");
+          return true;
+        }
+        const method = await copyText(response.content);
+        setActivity(`Copied complete response to ${method}`);
+        return true;
+      }
+      const codeCopy = normalized.match(/^\/copy-code(?:\s+(\d+))?$/);
+      if (codeCopy) {
+        const response = [...messages]
+          .reverse()
+          .find((message) => message.role === "assistant");
+        const codeBlocks = response
+          ? parseMarkdownBlocks(response.content).filter(
+              (block) => block.type === "code",
+            )
+          : [];
+        const requested = codeCopy[1]
+          ? Number(codeCopy[1]) - 1
+          : codeBlocks.length - 1;
+        const code = codeBlocks[requested];
+        if (!code || code.type !== "code") {
+          addMessage(
+            "error",
+            codeBlocks.length
+              ? `Code block not found. Choose 1-${codeBlocks.length}.`
+              : "The latest response has no code blocks to copy.",
+          );
+          return true;
+        }
+        const method = await copyText(code.content);
+        setActivity(`Copied code block ${requested + 1} to ${method}`);
+        return true;
+      }
+
+      switch (normalized) {
         case "/help":
           addMessage(
             "system",
             [
               "Commands",
-              ...UI_COMMANDS.map((item) => `${item.name.padEnd(9)} ${item.description}`),
+              ...UI_COMMANDS.map(
+                (item) => `${item.name.padEnd(9)} ${item.description}`,
+              ),
               "",
               "Keys: Enter submit · Shift+Enter newline · Shift+Tab mode · Ctrl+P commands · Ctrl+O models · Ctrl+C cancel/exit",
             ].join("\n"),
@@ -230,7 +426,7 @@ export function CorexTui({
           return false;
       }
     },
-    [addMessage, createSession, exit, model, openModels, root],
+    [addMessage, createSession, exit, messages, model, openModels, root],
   );
 
   const submit = useCallback(
@@ -238,18 +434,24 @@ export function CorexTui({
       const prompt = raw.trim();
       if (!prompt || busy) return;
       setInput("");
-      setHistory((current) => [...current.filter((item) => item !== prompt), prompt].slice(-50));
+      setHistory((current) =>
+        [...current.filter((item) => item !== prompt), prompt].slice(-50),
+      );
       setHistoryIndex(0);
       if (prompt.startsWith("/")) {
         try {
-          if (!(await runCommand(prompt))) addMessage("error", `Unknown command: ${prompt}`);
+          if (!(await runCommand(prompt)))
+            addMessage("error", `Unknown command: ${prompt}`);
         } catch (error) {
           addMessage("error", errorMessage(error));
         }
         return;
       }
       if (!modelReady) {
-        addMessage("error", "No usable model is selected. Type /model to select or download one.");
+        addMessage(
+          "error",
+          "No usable model is selected. Type /model to select or download one.",
+        );
         return;
       }
 
@@ -264,13 +466,17 @@ export function CorexTui({
           prompt,
           turnController.signal,
           (token) => {
-            setScrollOffset(0);
+            setScrollFromBottom(0);
             setStreaming((current) => current + token);
           },
           mode,
         );
         if (result.response) addMessage("assistant", result.response);
-        setActivity(result.changedFiles.length ? `Changed ${result.changedFiles.join(", ")}` : "Ready");
+        setActivity(
+          result.changedFiles.length
+            ? `Changed ${result.changedFiles.join(", ")}`
+            : "Ready",
+        );
       } catch (error) {
         addMessage("error", errorMessage(error));
         setActivity("Turn failed");
@@ -286,11 +492,30 @@ export function CorexTui({
   const selectHistory = useCallback(
     (direction: -1 | 1) => {
       if (!history.length) return;
-      const next = Math.min(history.length, Math.max(0, historyIndex - direction));
+      const next = Math.min(
+        history.length,
+        Math.max(0, historyIndex - direction),
+      );
       setHistoryIndex(next);
-      setInput(next === 0 ? "" : history[history.length - next] ?? "");
+      setInput(next === 0 ? "" : (history[history.length - next] ?? ""));
     },
     [history, historyIndex],
+  );
+
+  const commandMatches = filterCommands(input);
+  const slashMenuActive =
+    input.startsWith("/") && !busy && !overlay && !approval;
+  const selectHistoryOrCommand = useCallback(
+    (direction: -1 | 1) => {
+      if (input.startsWith("/")) {
+        setSelection((current) =>
+          moveSelection(current, direction, commandMatches.length),
+        );
+        return;
+      }
+      selectHistory(direction);
+    },
+    [commandMatches.length, input, selectHistory],
   );
 
   useInput((keyInput, key) => {
@@ -323,7 +548,26 @@ export function CorexTui({
         if (key.ctrl && keyInput === "c") controller.current?.abort();
         return;
       }
-      const length = overlay === "commands" ? UI_COMMANDS.length : models.length + 2;
+      if (
+        overlay === "models" &&
+        (modelAction === "paused" || modelAction === "failed")
+      ) {
+        if ((keyInput.toLowerCase() === "r" || key.return) && downloadName) {
+          void downloadModel(downloadName);
+        } else if (keyInput.toLowerCase() === "x") {
+          setModelAction("list");
+          setModelProgress(null);
+          setModelError("");
+          setDownloadName("");
+          setActivity("Model download cancelled");
+        } else if (key.escape) {
+          setModelAction("list");
+          setModelError("");
+        }
+        return;
+      }
+      const length =
+        overlay === "commands" ? UI_COMMANDS.length : modelChoices.length + 1;
       if (key.escape) {
         setOverlay(null);
       } else if (key.upArrow) {
@@ -336,17 +580,17 @@ export function CorexTui({
           setOverlay(null);
           if (command) void runCommand(command);
         } else {
-          const selected = models[selection];
-          if (selection < models.length && selected) {
+          const selected = modelChoices[selection];
+          if (selected?.installed) {
             setModel(selected.name);
             setModelReady(true);
             session.current = createSession(selected.name);
             setOverlay(null);
             setMessages([]);
-            setActivity(`Switched to ${selected.name}`);
-          } else if (selection === models.length) {
-            void downloadModel(initialModel);
-          } else {
+            setActivity(`Active model · ${selected.name}`);
+          } else if (selected) {
+            void downloadModel(selected.name);
+          } else if (selection === modelChoices.length) {
             setModelAction("custom");
             setModelDraft("");
           }
@@ -369,11 +613,13 @@ export function CorexTui({
       return;
     }
     if (key.pageUp || (key.ctrl && key.upArrow)) {
-      setScrollOffset((current) => Math.min(messages.length, current + 1));
+      const page = Math.max(1, viewport.clientHeight - 1);
+      setScrollFromBottom((current) => Math.min(maxScroll, current + page));
       return;
     }
     if (key.pageDown || (key.ctrl && key.downArrow)) {
-      setScrollOffset((current) => Math.max(0, current - 1));
+      const page = Math.max(1, viewport.clientHeight - 1);
+      setScrollFromBottom((current) => Math.max(0, current - page));
       return;
     }
     if (key.tab && key.shift && !busy) {
@@ -390,65 +636,109 @@ export function CorexTui({
     }
   });
 
-  const rows = process.stdout.rows ?? 24;
-  const columns = process.stdout.columns ?? 80;
-  const messageLimit = Math.max(2, Math.floor((rows - 11) / 2));
-  const end = Math.max(0, messages.length - scrollOffset);
-  const visibleMessages = messages.slice(Math.max(0, end - messageLimit), end);
   const composerActive = !busy && !overlay && !approval;
 
   return (
     <Box flexDirection="column" paddingX={1} height={rows} overflow="hidden">
-      <Box flexDirection="column" alignItems="center">
-        <Text color="cyan">{columns >= 70 ? renderBanner("0.1.0") : "COREX CODE · v0.1.0"}</Text>
-      </Box>
-      <Box borderStyle="single" borderColor="gray" paddingX={1} justifyContent="space-between">
-        <Text bold color="cyan">COREX CODE</Text>
-        <Text bold>+ New session</Text>
-        {columns >= 90 ? <Text dimColor>{root}</Text> : null}
+      <Box flexDirection="column" alignItems="center" flexShrink={0}>
+        <Text color="cyan" bold>
+          {renderBanner(COREX_VERSION)}
+        </Text>
       </Box>
 
-      <Box flexDirection="column" flexGrow={1} overflow="hidden" justifyContent="flex-end" paddingY={1}>
-        {messages.length > 0 || streaming ? (
-          <>
-            {scrollOffset > 0 ? <Text dimColor>↑ {scrollOffset} newer message(s) below</Text> : null}
-            {visibleMessages.map((message) => (
-              <Message key={message.id} message={message} />
-            ))}
-            {streaming ? (
-              <Box marginBottom={1}>
-                <Text color="green" bold>corex › </Text>
-                <Text>{streaming}</Text>
-              </Box>
-            ) : null}
-            {busy && !streaming ? <Text color="yellow">● {activity}…</Text> : null}
-          </>
-        ) : null}
+      <Box
+        ref={viewportRef}
+        flexDirection="column"
+        flexGrow={1}
+        flexShrink={1}
+        overflow="hidden"
+        contentOffsetY={scrollTop}
+      >
+        <Box
+          ref={contentRef}
+          flexDirection="column"
+          flexShrink={0}
+          width="100%"
+          paddingY={1}
+        >
+          {messages.length > 0 || streaming ? (
+            <>
+              {messages.map((message) => (
+                <Message
+                  key={message.id}
+                  message={message}
+                  terminalColumns={columns}
+                  copyContent={copyContent}
+                  registerClickTarget={registerClickTarget}
+                />
+              ))}
+              {streaming ? (
+                <Box marginBottom={1}>
+                  <Text color="green" bold>
+                    corex ›{" "}
+                  </Text>
+                  <Text>{streaming}</Text>
+                </Box>
+              ) : null}
+              {busy && !streaming ? (
+                <Text color="yellow">● {activity}…</Text>
+              ) : null}
+            </>
+          ) : null}
+        </Box>
       </Box>
 
       {approval ? (
         <ApprovalPanel approval={approval.request} />
       ) : overlay === "commands" ? (
-        <CommandPalette selection={selection} />
+        <CommandPalette commands={UI_COMMANDS} selection={selection} />
       ) : overlay === "models" ? (
         <ModelPalette
-          models={models}
+          choices={modelChoices}
           selection={selection}
           loading={modelsLoading}
           action={modelAction}
-          configuredModel={initialModel}
           draft={modelDraft}
           progress={modelProgress}
+          downloadName={downloadName}
+          error={modelError}
         />
       ) : (
-        <Box borderStyle="round" borderColor={busy ? "yellow" : "cyan"} flexDirection="column" paddingX={1}>
+        <>
+        {slashMenuActive ? (
+          <CommandPalette
+            commands={commandMatches}
+            selection={selection}
+            filtering
+          />
+        ) : null}
+        <Box
+          borderStyle="round"
+          borderColor={busy ? "yellow" : "cyan"}
+          flexDirection="column"
+          flexShrink={0}
+          paddingX={1}
+        >
           <Box minHeight={2}>
-            <Text color="cyan" bold>› </Text>
+            <Text color="cyan" bold>
+              ›{" "}
+            </Text>
             <TextArea
               value={input}
-              onChange={setInput}
-              onSubmit={(value) => void submit(value)}
-              onHistory={selectHistory}
+              onChange={(value) => {
+                setInput(value);
+                setSelection(0);
+              }}
+              onSubmit={(value) => {
+                const selectedCommand = commandMatches[selection]?.name;
+                const hasArguments = value.trim().includes(" ");
+                void submit(
+                  slashMenuActive && selectedCommand && !hasArguments
+                    ? selectedCommand
+                    : value,
+                );
+              }}
+              onHistory={selectHistoryOrCommand}
               placeholder={
                 busy
                   ? "Corex is working…"
@@ -462,26 +752,54 @@ export function CorexTui({
           </Box>
           <Box justifyContent="space-between">
             <Text>
-              <Text color={mode === "build" ? "blue" : mode === "plan" ? "yellow" : "magenta"} bold>
+              <Text
+                color={
+                  mode === "build"
+                    ? "blue"
+                    : mode === "plan"
+                      ? "yellow"
+                      : "magenta"
+                }
+                bold
+              >
                 {modeLabel(mode)}
               </Text>
               <Text dimColor> · </Text>
-              <Text bold color={modelReady ? "white" : "red"}>{model}{modelReady ? "" : " (not installed)"}</Text>
+              <Text bold color={modelReady ? "white" : "gray"}>
+                {modelReady ? model : "No model selected"}
+              </Text>
               <Text dimColor> · Ollama</Text>
             </Text>
             <Text dimColor>{usageText(usage)}</Text>
           </Box>
         </Box>
+        </>
       )}
 
-      <Box flexDirection="column" paddingX={1}>
-        <Text dimColor>{activity}</Text>
-        <Box justifyContent="flex-end">
+      <Box
+        flexDirection="row"
+        justifyContent="space-between"
+        width="100%"
+        flexShrink={0}
+      >
+        {/* Left: Two lines */}
+        <Box flexDirection="column" flexShrink={1}>
+          <Text dimColor>{activity}</Text>
+
+          {columns >= 90 && <Text dimColor>{root}</Text>}
+        </Box>
+
+        {/* Right: Shortcuts */}
+        <Box alignItems="flex-end">
           <Text>
-            <Text bold>shift+tab</Text><Text dimColor> mode  </Text>
-            <Text bold>ctrl+p</Text><Text dimColor> commands  </Text>
-            <Text bold>/model</Text><Text dimColor> models  </Text>
-            <Text bold>pgup/dn</Text><Text dimColor> scroll</Text>
+            <Text bold>shift+tab</Text>
+            <Text dimColor> mode </Text>
+            <Text bold>ctrl+p</Text>
+            <Text dimColor> commands </Text>
+            <Text bold>/model</Text>
+            <Text dimColor> models </Text>
+            <Text bold>pgup/dn</Text>
+            <Text dimColor> scroll</Text>
           </Text>
         </Box>
       </Box>
@@ -489,9 +807,20 @@ export function CorexTui({
   );
 }
 
-function Message({ message }: { message: TranscriptMessage }) {
+function Message({
+  message,
+  terminalColumns,
+  copyContent,
+  registerClickTarget,
+}: {
+  message: TranscriptMessage;
+  terminalColumns: number;
+  copyContent(content: string, label: string): Promise<void>;
+  registerClickTarget(target: ClickTarget): () => void;
+}) {
+  const isUser = message.role === "user";
   const style =
-    message.role === "user"
+    isUser
       ? { label: "you", color: "cyan" }
       : message.role === "assistant"
         ? { label: "corex", color: "green" }
@@ -499,25 +828,87 @@ function Message({ message }: { message: TranscriptMessage }) {
           ? { label: "error", color: "red" }
           : { label: "info", color: "yellow" };
   return (
-    <Box marginBottom={1}>
-      <Text bold color={style.color}>{style.label} › </Text>
-      <RichText content={message.content} />
+    <Box
+      marginBottom={1}
+      flexDirection="row"
+      justifyContent={isUser ? "flex-end" : "flex-start"}
+      width="100%"
+    >
+      <Box
+        flexDirection="column"
+        width={isUser ? undefined : "88%"}
+        maxWidth={
+          isUser ? Math.max(20, Math.floor(terminalColumns * 0.72)) : undefined
+        }
+        alignItems={isUser ? "flex-end" : "stretch"}
+      >
+        <Text bold color={style.color}>
+          {style.label}
+        </Text>
+        <RichText
+          content={message.content}
+          copyContent={copyContent}
+          registerClickTarget={registerClickTarget}
+        />
+        {message.role === "assistant" ? (
+          <CopyButton
+            label="[ Copy ]"
+            onCopy={() => void copyContent(message.content, "complete response")}
+            registerClickTarget={registerClickTarget}
+          />
+        ) : null}
+      </Box>
     </Box>
   );
 }
 
-function RichText({ content }: { content: string }) {
+function RichText({
+  content,
+  copyContent,
+  registerClickTarget,
+}: {
+  content: string;
+  copyContent(content: string, label: string): Promise<void>;
+  registerClickTarget(target: ClickTarget): () => void;
+}) {
   const blocks = parseMarkdownBlocks(content);
   return (
     <Box flexDirection="column" flexGrow={1}>
       {blocks.map((block, index) =>
         block.type === "code" ? (
-          <Box key={index} borderStyle="single" borderColor="gray" flexDirection="column" paddingX={1} marginY={1}>
-            {block.language ? <Text color="yellow" dimColor>{block.language}</Text> : null}
+          <Box
+            key={index}
+            borderStyle="single"
+            borderColor="gray"
+            flexDirection="column"
+            paddingX={1}
+            marginY={1}
+          >
+            <Box justifyContent="space-between">
+              <Text color="yellow" dimColor>
+                {block.language || "code"}
+              </Text>
+              <CopyButton
+                label="[ Copy ]"
+                onCopy={() =>
+                  void copyContent(
+                    block.content,
+                    `code block ${
+                      blocks
+                        .slice(0, index + 1)
+                        .filter((candidate) => candidate.type === "code").length
+                    }`,
+                  )
+                }
+                registerClickTarget={registerClickTarget}
+              />
+            </Box>
             {block.content.split("\n").map((line, lineIndex) => (
-              <Text key={lineIndex}>{tokenizeCodeLine(line).map((token, tokenIndex) => (
-                <Code key={tokenIndex} token={token} />
-              ))}</Text>
+              <Text key={lineIndex}>
+                {tokenizeCodeLine(line).map((token, tokenIndex) => (
+                  <Code key={tokenIndex} token={token} />
+                ))}
+              </Text>
             ))}
           </Box>
         ) : (
@@ -532,144 +923,351 @@ function RichText({ content }: { content: string }) {
   );
 }
 
+function CopyButton({
+  label,
+  onCopy,
+  registerClickTarget,
+}: {
+  label: string;
+  onCopy(): void;
+  registerClickTarget(target: ClickTarget): () => void;
+}) {
+  const ref = useRef<DOMElement | null>(null);
+  const [hovering, setHovering] = useState(false);
+  const onCopyRef = useRef(onCopy);
+  onCopyRef.current = onCopy;
+
+  useEffect(() => {
+    if (!ref.current) return;
+    const target: ClickTarget = {
+      element: ref.current,
+      onClick: () => onCopyRef.current(),
+      onHover: setHovering,
+    };
+    return registerClickTarget(target);
+  }, [registerClickTarget]);
+
+  return (
+    <Box ref={ref}>
+      <Text color="cyan" bold inverse={hovering}>
+        {label}
+      </Text>
+    </Box>
+  );
+}
+
 function MarkdownLine({ line }: { line: string }) {
-  if (line.startsWith("### ")) return <Text bold color="cyan">{line.slice(4)}</Text>;
-  if (line.startsWith("## ")) return <Text bold color="cyan">{line.slice(3)}</Text>;
-  if (line.startsWith("# ")) return <Text bold color="cyan">{line.slice(2)}</Text>;
+  if (line.startsWith("### "))
+    return (
+      <Text bold color="cyan">
+        {line.slice(4)}
+      </Text>
+    );
+  if (line.startsWith("## "))
+    return (
+      <Text bold color="cyan">
+        {line.slice(3)}
+      </Text>
+    );
+  if (line.startsWith("# "))
+    return (
+      <Text bold color="cyan">
+        {line.slice(2)}
+      </Text>
+    );
   const bullet = line.match(/^\s*[-*]\s+(.+)$/);
-  if (bullet) return <Text><Text color="cyan">• </Text><InlineText content={bullet[1]!} /></Text>;
+  if (bullet)
+    return (
+      <Text>
+        <Text color="cyan">• </Text>
+        <InlineText content={bullet[1]!} />
+      </Text>
+    );
   if (line.startsWith("+")) return <Text color="green">{line}</Text>;
-  if (line.startsWith("-") && !line.startsWith("---")) return <Text color="red">{line}</Text>;
+  if (line.startsWith("-") && !line.startsWith("---"))
+    return <Text color="red">{line}</Text>;
   return <InlineText content={line} />;
 }
 
 function InlineText({ content }: { content: string }) {
   const parts = content.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter(Boolean);
   return (
-    <Text>{parts.map((part, index) => {
-      if (part.startsWith("`") && part.endsWith("`")) {
-        return <Text key={index} color="cyan">{part.slice(1, -1)}</Text>;
-      }
-      if (part.startsWith("**") && part.endsWith("**")) {
-        return <Text key={index} bold>{part.slice(2, -2)}</Text>;
-      }
-      return part;
-    })}</Text>
+    <Text>
+      {parts.map((part, index) => {
+        if (part.startsWith("`") && part.endsWith("`")) {
+          return (
+            <Text key={index} color="cyan">
+              {part.slice(1, -1)}
+            </Text>
+          );
+        }
+        if (part.startsWith("**") && part.endsWith("**")) {
+          return (
+            <Text key={index} bold>
+              {part.slice(2, -2)}
+            </Text>
+          );
+        }
+        return part;
+      })}
+    </Text>
   );
 }
 
 function Code({ token }: { token: CodeToken }) {
-  const color = token.kind === "keyword"
-    ? "magenta"
-    : token.kind === "string"
-      ? "green"
-      : token.kind === "number"
-        ? "cyan"
-        : token.kind === "comment"
-          ? "gray"
-          : "white";
-  return <Text color={color} dimColor={token.kind === "comment"}>{token.text}</Text>;
+  const color =
+    token.kind === "keyword"
+      ? "magenta"
+      : token.kind === "string"
+        ? "green"
+        : token.kind === "number"
+          ? "cyan"
+          : token.kind === "comment"
+            ? "gray"
+            : "white";
+  return (
+    <Text color={color} dimColor={token.kind === "comment"}>
+      {token.text}
+    </Text>
+  );
 }
 
-function CommandPalette({ selection }: { selection: number }) {
+function CommandPalette({
+  commands,
+  selection,
+  filtering = false,
+}: {
+  commands: UiCommand[];
+  selection: number;
+  filtering?: boolean;
+}) {
   return (
-    <Box borderStyle="round" borderColor="blue" flexDirection="column" paddingX={1}>
-      <Text bold color="blue">Commands</Text>
-      {UI_COMMANDS.map((command, index) => (
+    <Box
+      borderStyle="round"
+      borderColor="blue"
+      flexDirection="column"
+      flexShrink={0}
+      paddingX={1}
+    >
+      <Text bold color="blue">
+        Commands
+      </Text>
+      {commands.map((command, index) => (
         <Text key={command.name} inverse={index === selection}>
-          {index === selection ? "›" : " "} {command.name.padEnd(9)} {command.description}
+          {index === selection ? "›" : " "} {command.name.padEnd(9)}{" "}
+          {command.description}
         </Text>
       ))}
-      <Text dimColor>↑↓ navigate · enter select · esc close</Text>
+      {!commands.length ? <Text dimColor>No matching commands</Text> : null}
+      <Text dimColor>
+        {filtering
+          ? "type to filter · ↑↓ navigate · enter run"
+          : "↑↓ navigate · enter select · esc close"}
+      </Text>
     </Box>
   );
 }
 
 function ModelPalette({
-  models,
+  choices,
   selection,
   loading,
   action,
-  configuredModel,
   draft,
   progress,
+  downloadName,
+  error,
 }: {
-  models: LocalModel[];
+  choices: ModelChoice[];
   selection: number;
   loading: boolean;
   action: ModelAction;
-  configuredModel: string;
   draft: string;
   progress: PullProgress | null;
+  downloadName: string;
+  error: string;
 }) {
   if (action === "custom") {
     return (
-      <Box borderStyle="round" borderColor="magenta" flexDirection="column" paddingX={1}>
-        <Text bold color="magenta">Download another model</Text>
-        <Text>Model name: {draft}<Text inverse> </Text></Text>
+      <Box
+        borderStyle="round"
+        borderColor="magenta"
+        flexDirection="column"
+        paddingX={1}
+      >
+        <Text bold color="magenta">
+          Download another model
+        </Text>
+        <Text>
+          Model name: {draft}
+          <Text inverse> </Text>
+        </Text>
         <Text dimColor>enter download · esc back</Text>
       </Box>
     );
   }
   if (action === "downloading") {
+    const percent = progress?.percent ?? 0;
     return (
-      <Box borderStyle="round" borderColor="yellow" flexDirection="column" paddingX={1}>
-        <Text bold color="yellow">Downloading model</Text>
+      <Box
+        borderStyle="round"
+        borderColor="yellow"
+        flexDirection="column"
+        paddingX={1}
+      >
+        <Text bold color="yellow">
+          Downloading {downloadName}
+        </Text>
         <Text>{progress?.status ?? "Starting download…"}</Text>
-        {progress?.percent === undefined ? null : <Text color="cyan">{progress.percent}%</Text>}
-        <Text dimColor>ctrl+c cancel</Text>
+        <Text color="cyan">
+          [{progressBar(percent)}] {progress?.percent === undefined ? "…" : `${percent}%`}
+        </Text>
+        {progress?.total ? (
+          <Text dimColor>
+            {formatBytes(progress.completed)} / {formatBytes(progress.total)}
+          </Text>
+        ) : null}
+        <Text dimColor>ctrl+c pause download</Text>
       </Box>
     );
   }
-  return (
-    <Box borderStyle="round" borderColor="magenta" flexDirection="column" paddingX={1}>
-      <Text bold color="magenta">Select or download model</Text>
-      {loading ? <Text>Loading…</Text> : null}
-      {!loading && !models.length ? <Text dimColor>No installed models found</Text> : null}
-      {models.map((item, index) => (
-        <Text key={item.name} inverse={index === selection}>
-          {index === selection ? "›" : " "} {item.name} {item.parameterSize ?? ""} {item.quantization ?? ""}
+  if (action === "paused" || action === "failed") {
+    return (
+      <Box
+        borderStyle="round"
+        borderColor={action === "paused" ? "yellow" : "red"}
+        flexDirection="column"
+        paddingX={1}
+      >
+        <Text bold color={action === "paused" ? "yellow" : "red"}>
+          {action === "paused" ? "Download paused" : "Download interrupted"} ·{" "}
+          {downloadName}
         </Text>
-      ))}
+        {error ? <Text color="red">{error}</Text> : null}
+        <Text dimColor>
+          R or Enter resume/retry · X cancel · Esc return to models
+        </Text>
+      </Box>
+    );
+  }
+  const firstDownload = choices.findIndex((choice) => !choice.installed);
+  const installedCount = choices.filter((choice) => choice.installed).length;
+  const windowSize = 5;
+  const windowStart = Math.min(
+    Math.max(0, selection - Math.floor(windowSize / 2)),
+    Math.max(0, choices.length - windowSize),
+  );
+  const visibleChoices = choices
+    .slice(windowStart, windowStart + windowSize)
+    .map((choice, offset) => ({ choice, index: windowStart + offset }));
+  return (
+    <Box
+      borderStyle="round"
+      borderColor="magenta"
+      flexDirection="column"
+      paddingX={1}
+    >
+      <Text bold color="magenta">
+        Models
+      </Text>
+      {loading ? <Text>Loading…</Text> : null}
+      {error ? (
+        <Text color="red">Local Ollama unavailable · run: ollama serve</Text>
+      ) : null}
       {!loading ? (
         <>
-          <Text inverse={selection === models.length}>
-            {selection === models.length ? "›" : " "} Download configured: {configuredModel}
+          <Text bold color="green">
+            Installed models ({installedCount}) · ● active · ✓ ready
           </Text>
-          <Text inverse={selection === models.length + 1}>
-            {selection === models.length + 1 ? "›" : " "} Download another model…
+          {!installedCount ? <Text dimColor>  None installed</Text> : null}
+          {windowStart > 0 ? <Text dimColor>  ↑ more models</Text> : null}
+          {visibleChoices.map(({ choice: item, index }) => (
+            <Box key={item.name} flexDirection="column">
+              {(index === firstDownload || (index === windowStart && !item.installed)) ? (
+                <Text bold color="cyan">
+                  Open coding models · ↓ select to download
+                </Text>
+              ) : null}
+              <Text inverse={index === selection}>
+                {index === selection ? "›" : " "}{" "}
+                {item.active ? "●" : item.installed ? "✓" : "↓"} {item.name}{" "}
+                <Text dimColor>
+                  {item.parameterSize ?? ""} {item.sizeLabel ?? ""}
+                </Text>
+              </Text>
+            </Box>
+          ))}
+          {windowStart + visibleChoices.length < choices.length ? (
+            <Text dimColor>  ↓ more models</Text>
+          ) : null}
+          <Text inverse={selection === choices.length}>
+            {selection === choices.length ? "›" : " "} + Download another model…
           </Text>
+          {choices[selection]?.description ? (
+            <Text dimColor>  {choices[selection].description}</Text>
+          ) : null}
         </>
       ) : null}
-      <Text dimColor>↑↓ navigate · enter select · esc close</Text>
+      <Text dimColor>
+        ↑↓ navigate · Enter activate/download · Esc close
+      </Text>
     </Box>
   );
+}
+
+function progressBar(percent: number, width = 24): string {
+  const filled = Math.max(0, Math.min(width, Math.round((percent / 100) * width)));
+  return `${"█".repeat(filled)}${"░".repeat(width - filled)}`;
 }
 
 function ApprovalPanel({ approval }: { approval: ApprovalRequest }) {
   const diff = approval.diff.split("\n").slice(-18).join("\n");
   return (
-    <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1}>
-      <Text bold color="yellow">Approval required · {approval.path}</Text>
+    <Box
+      borderStyle="double"
+      borderColor="yellow"
+      flexDirection="column"
+      paddingX={1}
+    >
+      <Text bold color="yellow">
+        Approval required · {approval.path}
+      </Text>
       <Text>{approval.explanation}</Text>
       <Box flexDirection="column">
         {diff.split("\n").map((line, index) => (
           <Text
             key={index}
-            color={line.startsWith("+") && !line.startsWith("+++") ? "green" : line.startsWith("-") && !line.startsWith("---") ? "red" : "gray"}
+            color={
+              line.startsWith("+") && !line.startsWith("+++")
+                ? "green"
+                : line.startsWith("-") && !line.startsWith("---")
+                  ? "red"
+                  : "gray"
+            }
           >
             {line}
           </Text>
         ))}
       </Box>
-      <Text><Text bold color="green">Y</Text> apply exact patch · <Text bold color="red">N</Text> reject</Text>
+      <Text>
+        <Text bold color="green">
+          Y
+        </Text>{" "}
+        apply exact patch ·{" "}
+        <Text bold color="red">
+          N
+        </Text>{" "}
+        reject
+      </Text>
     </Box>
   );
 }
 
 function usageText(usage: ModelUsage | null): string {
   if (!usage) return "";
-  const input = usage.promptTokens === undefined ? "" : `${usage.promptTokens} in`;
-  const output = usage.generatedTokens === undefined ? "" : `${usage.generatedTokens} out`;
+  const input =
+    usage.promptTokens === undefined ? "" : `${usage.promptTokens} in`;
+  const output =
+    usage.generatedTokens === undefined ? "" : `${usage.generatedTokens} out`;
   return [input, output].filter(Boolean).join(" · ");
 }

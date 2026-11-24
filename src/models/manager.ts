@@ -15,6 +15,100 @@ export type PullProgress = {
   percent?: number | undefined;
 };
 
+export type CatalogModel = {
+  name: string;
+  parameterSize: string;
+  estimatedSize: string;
+  description: string;
+};
+
+export const OPEN_MODEL_CATALOG: CatalogModel[] = [
+  {
+    name: "qwen2.5-coder:3b",
+    parameterSize: "3B",
+    estimatedSize: "~1.9 GB",
+    description: "Fast coding model for smaller computers",
+  },
+  {
+    name: "qwen2.5-coder:7b",
+    parameterSize: "7B",
+    estimatedSize: "~4.7 GB",
+    description: "Balanced code generation and fixing",
+  },
+  {
+    name: "qwen2.5-coder:14b",
+    parameterSize: "14B",
+    estimatedSize: "~9 GB",
+    description: "Stronger reasoning for larger machines",
+  },
+  {
+    name: "qwen3-coder:30b",
+    parameterSize: "30B",
+    estimatedSize: "~19 GB",
+    description: "Agentic coding with tool support",
+  },
+  {
+    name: "deepseek-coder:6.7b",
+    parameterSize: "6.7B",
+    estimatedSize: "~3.8 GB",
+    description: "General-purpose code model",
+  },
+  {
+    name: "starcoder2:7b",
+    parameterSize: "7B",
+    estimatedSize: "~4 GB",
+    description: "Open multilingual code generation",
+  },
+];
+
+export type ModelChoice = {
+  name: string;
+  installed: boolean;
+  active: boolean;
+  parameterSize?: string | undefined;
+  sizeLabel?: string | undefined;
+  description?: string | undefined;
+};
+
+export function buildModelChoices(
+  installedModels: LocalModel[],
+  activeModel: string | null,
+  configuredModel: string,
+): ModelChoice[] {
+  const installed: ModelChoice[] = installedModels.map((item) => ({
+    name: item.name,
+    installed: true,
+    active: activeModel !== null && matchesModelName(item.name, activeModel),
+    parameterSize: item.parameterSize,
+    sizeLabel: formatBytes(item.size),
+  }));
+  const catalog = [...OPEN_MODEL_CATALOG];
+  if (!catalog.some((item) => matchesModelName(item.name, configuredModel))) {
+    catalog.unshift({
+      name: configuredModel,
+      parameterSize: "configured",
+      estimatedSize: "size shown during download",
+      description: "Configured default model",
+    });
+  }
+  const downloadable = catalog
+    .filter(
+      (item) =>
+        !installedModels.some((installedModel) =>
+          matchesModelName(installedModel.name, item.name),
+        ),
+    )
+    .map((item) => ({
+      name: item.name,
+      installed: false,
+      active: false,
+      parameterSize: item.parameterSize,
+      sizeLabel: item.estimatedSize,
+      description: item.description,
+    }));
+  return [...installed, ...downloadable];
+}
+
 type ProgressChunk = { status: string; completed?: number; total?: number };
 
 export interface ModelCatalogClient {

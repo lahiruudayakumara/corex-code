@@ -3,8 +3,32 @@
   "version": "0.1.0",
   "description": "A local-first AI coding agent with safe, reviewable edits.",
   "type": "module",
-  "private": true,
   "license": "MIT",
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "cli",
+    "local-first",
+    "ollama"
+  ],
+  "homepage": "https://github.com/lahiruudayakumara/corex-code#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lahiruudayakumara/corex-code.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lahiruudayakumara/corex-code/issues"
+  },
+  "files": [
+    "dist/corex.js",
+    "README.md",
+    "LICENSE",
+    "corex.config.example.json"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "packageManager": "bun@1.4.5",
   "bin": {
     "corex": "./dist/corex.js"
@@ -16,7 +40,11 @@
     "test:coverage": "bun test --coverage",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src tests",
-    "check": "bun run typecheck && bun run lint && bun test && bun run build"
+    "check": "bun run typecheck && bun run lint && bun test && bun run build",
+    "pack:check": "bun run build && bun run scripts/package-pack-check.ts",
+    "smoke:package": "bun run scripts/package-smoke.ts",
+    "prepack": "bun run build",
+    "prepublishOnly": "bun run check && bun run smoke:package"
   },
   "dependencies": {
     "commander": "^14.0.2",
